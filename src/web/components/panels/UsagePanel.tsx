@@ -145,7 +145,9 @@ export function UsagePanel({ mode, capabilities, usage, records }: Readonly<Usag
         {local ? (
           <p className="m-0 text-xs text-ink-soft">Not applicable — {COPY.localNoCharge.toLowerCase()}</p>
         ) : budget === null ? (
-          <NotReported label="No limit set" reason={MISSING_REASON.budgetNone} className="text-xs" />
+          <p className="m-0 text-xs text-ink-soft" title={MISSING_REASON.budgetNone}>
+            <span className="font-semibold text-ink">No app spending limit</span> — plays until the balance is exhausted or you press Stop.
+          </p>
         ) : (
           <>
             <Meter

@@ -83,8 +83,9 @@ export interface SessionLimits {
   /** Hard cap on model output tokens per request. */
   maxOutputTokens: number;
   /**
-   * Application spending budget for PAID provider calls in micro-USD.
-   * This is an app-side limit, NOT a provider quota. null = no budget set (paid providers refuse to start).
+   * Optional application spending limit for PAID provider calls in micro-USD. This is an app-side
+   * limit, NOT a provider quota. null = no app spending limit (the user's explicit choice; API-key
+   * providers then bill every request to the user's account until the balance runs out or Stop).
    */
   budgetMicros: UsdMicros | null;
   /** Per-attempt timeout for a model decision. */
@@ -98,6 +99,11 @@ export interface SessionLimits {
   maxConsecutiveFailures: number;
   /** Completed rounds included in the model observation. */
   historyWindow: number;
+  /**
+   * May an AI player end the session with action "stop"? Default false: play continues until the
+   * balance cannot cover the minimum stake, a configured limit is reached, or the user presses Stop.
+   */
+  allowModelStop: boolean;
 }
 
 export const DEFAULT_LIMITS: SessionLimits = {
@@ -107,14 +113,16 @@ export const DEFAULT_LIMITS: SessionLimits = {
   maxStakePerBet: 100_00,
   maxStakePerRound: 200_00,
   maxBetsPerRound: 10,
-  maxRounds: 50,
-  maxRuntimeSec: 30 * 60,
+  // No stopping limits by default: sessions run until the balance is exhausted or the user stops.
+  maxRounds: null,
+  maxRuntimeSec: null,
   maxOutputTokens: 400,
-  budgetMicros: 250_000, // $0.25
+  budgetMicros: null, // no app spending limit unless the user sets one
   decisionTimeoutMs: 60_000,
   maxRetries: 2,
   maxConsecutiveFailures: 1,
   historyWindow: 20,
+  allowModelStop: false,
 };
 
 // ───────────────────────────── players / providers ─────────────────────────────
@@ -229,13 +237,17 @@ export interface GameObservation {
   stats: { roundsPlayed: number; netResult: Subunits };
 }
 
+/** "strategy" is the player's own short name for the approach it says it follows (unverified). */
 export type PlayerDecision =
-  | { action: 'bet'; bets: BetInput[]; explanation?: string }
-  | { action: 'skip'; explanation?: string }
-  | { action: 'stop'; explanation?: string };
+  | { action: 'bet'; bets: BetInput[]; strategy?: string; explanation?: string }
+  | { action: 'skip'; strategy?: string; explanation?: string }
+  | { action: 'stop'; strategy?: string; explanation?: string };
+
+/** Max characters of the stated strategy kept/displayed. */
+export const MAX_STRATEGY_CHARS = 120;
 
 /** Max characters of the optional explanation kept/displayed. */
-export const MAX_EXPLANATION_CHARS = 280;
+export const MAX_EXPLANATION_CHARS = 400;
 /** Max characters of raw provider output stored for inspection. */
 export const MAX_RAW_OUTPUT_CHARS = 4000;
 

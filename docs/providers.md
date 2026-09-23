@@ -155,8 +155,9 @@ bundled with Claude Code.
 | `claude-sonnet-5` | 2 | 10 | 0.20 | 2.50 |
 | `claude-sonnet-4-6` | 3 | 15 | 0.30 | 3.75 |
 
-The **app budget** (`budgetMicros`, default $0.25 per session) is a limit enforced by Luck. It is
-not a provider quota, and it is not what the provider will bill.
+The **app spending limit** (`budgetMicros`) is optional and enforced by Luck. By default it is **not set**
+(sessions run until the balance is exhausted or you press Stop). When you set one, it is checked conservatively
+before every paid request. It is not a provider quota, and it is not what the provider will bill.
 
 ## Running Ollama locally
 

@@ -1,6 +1,6 @@
 import type { DecisionRecord, SessionMode } from '../../../shared/contracts';
 import { COPY, DECISION_STATUS_LABEL, MISSING_REASON } from '../../copy';
-import { betLabel, formatCredits, formatMs } from '../../state/format';
+import { betLabel, formatCredits, formatMs, splitStatedStrategy } from '../../state/format';
 import { Badge, type BadgeTone } from '../common/Badge';
 import { Card } from '../common/Card';
 import { EmptyState } from '../common/EmptyState';
@@ -30,6 +30,7 @@ const STATUS_TONE: Record<DecisionRecord['status'], BadgeTone> = {
 export function LatestDecisionCard({ decision, mode }: Readonly<LatestDecisionCardProps>) {
   if (mode === 'manual' || mode === null) return null;
   const d = decision;
+  const stated = splitStatedStrategy(d?.explanation);
   return (
     <Card
       title="Latest decision"
@@ -62,12 +63,19 @@ export function LatestDecisionCard({ decision, mode }: Readonly<LatestDecisionCa
             </ul>
           ) : null}
 
-          {d.explanation ? (
+          {stated.strategy ? (
+            <div className="rounded-lg border border-secondary/20 bg-secondary-soft px-2 py-1.5" title={COPY.modelStrategyNote}>
+              <p className="m-0 font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary-strong">{COPY.modelStrategyTitle}</p>
+              <p className="m-0 mt-0.5 break-words text-sm font-semibold text-ink">{stated.strategy}</p>
+            </div>
+          ) : null}
+
+          {stated.explanation ? (
             <figure className="m-0 rounded-lg bg-ivory-deep p-2 shadow-inset-soft">
               <figcaption className="font-mono text-[10px] font-semibold uppercase tracking-wider text-ink-muted" title={COPY.modelExplanationNote}>
                 {mode === 'demo' ? 'Demo player’s rule description' : COPY.modelExplanationTitle}
               </figcaption>
-              <blockquote className="m-0 mt-1 break-words font-mono text-xs leading-relaxed text-ink-soft">“{d.explanation}”</blockquote>
+              <blockquote className="m-0 mt-1 break-words font-mono text-xs leading-relaxed text-ink-soft">“{stated.explanation}”</blockquote>
             </figure>
           ) : null}
 

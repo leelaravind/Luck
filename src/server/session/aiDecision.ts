@@ -25,7 +25,7 @@ import {
   type UsageAttemptStatus,
 } from '../../shared/contracts.js';
 import { validateBetSlip } from '../../shared/bets.js';
-import { parseDecision, PLAYER_DECISION_JSON_SCHEMA } from '../../shared/decision.js';
+import { decisionJsonSchema, parseDecision } from '../../shared/decision.js';
 import type { DecisionRequest, ProviderAdapter, ProviderCallResult, ResolvedProviderConfig } from '../types.js';
 import { redact } from '../redact.js';
 import { resolveProviderConfig } from '../providers/registry.js';
@@ -237,7 +237,7 @@ export async function requestAiDecision(
 
   const caps = adapter.capabilities;
   const pricing = resolvePricing(core, kind, session.player, cfg.model);
-  const systemPrompt = buildSystemPrompt(obs);
+  const systemPrompt = buildSystemPrompt(obs, { allowStop: session.limits.allowModelStop === true });
   const maxAttempts = 1 + Math.max(0, limits.maxRetries);
   const label = caps.label || kind;
   let correctiveNote: string | null = null;
@@ -274,7 +274,8 @@ export async function requestAiDecision(
         finish({ status: 'blocked_budget', errorCode: 'budget', errorMessage: check.message, attempts: attempt - 1 });
         return { kind: 'blocked_budget', decisionId: decision.id, message: check.message };
       }
-      maxBudgetUsd = check.remainingMicros / 1_000_000;
+      // No app limit → no --max-budget-usd cap is passed to the CLI either.
+      maxBudgetUsd = check.remainingMicros === null ? null : check.remainingMicros / 1_000_000;
     }
 
     core.updateDecision(decision.id, { attempts: attempt });
@@ -282,7 +283,7 @@ export async function requestAiDecision(
       observation: obs,
       systemPrompt,
       userPrompt,
-      jsonSchema: PLAYER_DECISION_JSON_SCHEMA,
+      jsonSchema: decisionJsonSchema({ allowStop: limits.allowModelStop === true }),
       model: cfg.model,
       maxOutputTokens: limits.maxOutputTokens,
       timeoutMs: limits.decisionTimeoutMs,
@@ -379,7 +380,10 @@ export async function requestAiDecision(
           errors = parsed.errors;
         } else {
           decided = parsed.decision;
-          if (decided.action === 'bet') {
+          if (decided.action === 'stop' && limits.allowModelStop !== true) {
+            // Not converted into another action: recorded as invalid and retried / paused like any invalid output.
+            errors = ['action "stop" is not available in this session: choose "bet" or "skip" (the user or the limits end the session)'];
+          } else if (decided.action === 'bet') {
             try {
               resolved = validateBetSlip(decided.bets, { balance: session.balance, limits });
             } catch (err) {
@@ -397,7 +401,11 @@ export async function requestAiDecision(
         }
 
         record(result, 'ok');
-        const explanation = clip(decided.explanation ?? null, MAX_EXPLANATION_CHARS);
+        // The stated strategy is kept with the explanation so every view (card, log, export) shows it.
+        // Stored as "Strategy: <name>" on its own first line, then the explanation (the UI splits them).
+        const strategyLine = decided.strategy ? `Strategy: ${decided.strategy.replace(/\s+/g, ' ')}` : '';
+        const stated = [strategyLine, decided.explanation ?? ''].filter(Boolean).join('\n');
+        const explanation = clip(stated === '' ? null : stated, MAX_EXPLANATION_CHARS);
         finish({
           status: 'accepted',
           action: decided.action,

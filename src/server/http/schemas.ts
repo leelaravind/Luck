@@ -68,6 +68,7 @@ export const sessionLimitsSchema = z.strictObject({
   maxRetries: count,
   maxConsecutiveFailures: count,
   historyWindow: count,
+  allowModelStop: z.boolean(),
 });
 
 export const createSessionBody = z.strictObject({

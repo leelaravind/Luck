@@ -131,8 +131,14 @@ Controls for demo and AI sessions:
 | **Stop** | Ends the session. A pending model request is cancelled and its late answer ignored; bets already committed are still settled. |
 | **Next round** | Plays exactly one round, then pauses. |
 
-Sessions stop by themselves at their limits (maximum rounds, running time, or the spending budget for
-paid providers). The spending budget is an estimate kept by Luck — it is not your provider's quota.
+By default a session has **no stopping limits**: it keeps playing until the balance can no longer cover the
+minimum stake, or until you press **Stop**. AI players name the strategy they say they follow, and by default
+they cannot end the session themselves. In the New session dialog you can optionally set a maximum number of
+rounds, a running time, an app spending limit (USD), or let the model end the session.
+
+> Virtual credits cost nothing, but model requests may: with an Anthropic/OpenAI **API key** every request is
+> billed to your account, and Claude Code on a subscription uses your plan quota. Set an app spending limit if
+> you want Luck to stop before that.
 
 ## 8. Run tests
 

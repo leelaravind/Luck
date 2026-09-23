@@ -115,7 +115,8 @@ export function NewSessionDialog({
         />
         {noBudget ? (
           <p className="m-0 rounded-lg border border-warning/30 bg-warning-soft px-2 py-1.5 text-xs text-ink-soft">
-            No app spending limit is set. Paid providers refuse to start without one.
+            No app spending limit is set: this AI plays until the balance runs out or you press Stop. With an API key,
+            every request is billed to your provider account; Claude Code on a subscription uses your plan quota.
           </p>
         ) : null}
         {error ? <InlineError message={error.message} code={error.code} details={error.details} /> : null}

@@ -350,18 +350,33 @@ describe('autonomous AI runner (fake adapter fixtures)', () => {
     expect(instant.sleeps).toEqual([600, 600, 600, 600]);
   });
 
-  it('model "stop" completes the session with model_stop; "skip" plays a no-bet round', async () => {
+  it('with allowModelStop, model "stop" completes the session with model_stop; "skip" plays a no-bet round', async () => {
     const adapter = fakeAdapter();
     adapter.script.push(() => okDecision({ action: 'skip', explanation: 'sitting out' }));
     adapter.script.push(() => okDecision({ action: 'stop', explanation: 'done' }));
     const h = harness({ adapters: [adapter] });
-    const s = createAi(h);
+    const s = createAi(h, { allowModelStop: true });
     await h.service.control(s.id, 'start', h.key());
     await waitUntil(() => status(h, s.id) === 'completed', 'completed');
     expect(h.repo.getSession(s.id)).toMatchObject({ endReason: 'model_stop', roundsPlayed: 1, balance: 100_000 });
     const [skipRound] = h.repo.listRounds(s.id);
     expect(skipRound).toMatchObject({ status: 'settled', totalStake: 0, net: 0, source: 'ai' });
     expect(skipRound!.bets).toEqual([]);
+  });
+
+  it('by default the model cannot end the session: "stop" is rejected (never converted), the session pauses', async () => {
+    const adapter = fakeAdapter({ fallback: () => okDecision({ action: 'stop', explanation: 'protect the balance' }) });
+    const h = harness({ adapters: [adapter] });
+    const s = createAi(h, { maxRetries: 1 });
+    await h.service.control(s.id, 'start', h.key());
+    await waitUntil(() => status(h, s.id) === 'paused', 'paused');
+    const after = h.repo.getSession(s.id)!;
+    expect(after.pauseReason).toBe('invalid_output');
+    expect(after.endReason).toBeNull();
+    expect(adapter.calls).toHaveLength(2);
+    expect(h.repo.listRounds(s.id)).toHaveLength(0);
+    const [d] = h.repo.listDecisions(s.id);
+    expect(d!.validationErrors.join(' ')).toMatch(/"stop" is not available/);
   });
 });
 
@@ -493,16 +508,19 @@ describe('provider failures, invalid output and budgets (fake adapter fixtures)'
     expect(h.repo.getSession(s.id)!.message).toMatch(/spent \$0\.301/);
   });
 
-  it('paid provider without pricing (and no provider cost) or without budget refuses to start', async () => {
+  it('paid provider with an app limit but no pricing refuses to start; with no app limit it runs', async () => {
     const adapter = fakeAdapter({ kind: 'openai', paid: true });
     const h = harness({ adapters: [adapter] });
-    const noPricing = createAi(h, {}, { kind: 'openai', model: 'unpriced-model' });
+    const noPricing = createAi(h, { budgetMicros: 250_000 }, { kind: 'openai', model: 'unpriced-model' });
     await expect(h.service.control(noPricing.id, 'start', h.key())).rejects.toMatchObject({ code: 'invalid_state' });
     await expect(h.service.control(noPricing.id, 'start', h.key())).rejects.toThrow(/No pricing assumption/);
-    const noBudget = createAi(h, { budgetMicros: null }, { kind: 'openai', model: 'm', pricing: { inputPerMTokUsd: 1, outputPerMTokUsd: 1, source: 'user' } });
-    await expect(h.service.control(noBudget.id, 'start', h.key())).rejects.toMatchObject({ code: 'budget_exhausted' });
     expect(adapter.calls).toHaveLength(0);
     expect(status(h, noPricing.id)).toBe('ready');
+    // No app spending limit (the user's explicit choice): starts even without a pricing assumption.
+    const unlimited = createAi(h, { budgetMicros: null, maxRounds: 1 }, { kind: 'openai', model: 'unpriced-model' });
+    await h.service.control(unlimited.id, 'start', h.key());
+    await waitUntil(() => status(h, unlimited.id) === 'completed', 'completed');
+    expect(adapter.calls.length).toBeGreaterThan(0);
   });
 
   it('an unconfigured provider refuses to start (never switches to the demo player)', async () => {
@@ -629,6 +647,7 @@ function testLimits(): SessionLimits {
     maxRetries: 2,
     maxConsecutiveFailures: 3,
     historyWindow: 20,
+    allowModelStop: false,
   };
 }
 

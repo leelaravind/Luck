@@ -48,6 +48,20 @@ export function LimitsEditor({ values, errors, onChange, showModelLimits = true 
       {group('Credits (virtual)', MONEY)}
       {group('Rounds', PLAY)}
       {showModelLimits ? group('Model requests', MODEL) : null}
+      {showModelLimits ? (
+        <label className="flex items-start gap-2 text-sm text-ink">
+          <input
+            type="checkbox"
+            className="mt-0.5 h-4 w-4 accent-primary"
+            checked={values.allowModelStop === 'true'}
+            onChange={(e) => onChange('allowModelStop', e.target.checked ? 'true' : 'false')}
+          />
+          <span>
+            {LIMIT_FIELD_COPY.allowModelStop.label}
+            <span className="block text-xs text-ink-muted">{LIMIT_FIELD_COPY.allowModelStop.hint}</span>
+          </span>
+        </label>
+      ) : null}
     </div>
   );
 }

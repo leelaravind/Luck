@@ -89,6 +89,8 @@ const LimitsShape = {
   maxRetries: z.int().min(0).max(5),
   maxConsecutiveFailures: posInt(100),
   historyWindow: z.int().min(0).max(200),
+  // Older stored sessions have no value: treat as "the model may not end the session".
+  allowModelStop: z.boolean().default(false),
 } satisfies Record<keyof SessionLimits, z.ZodType>;
 
 export const SessionLimitsSchema = z.strictObject(LimitsShape);

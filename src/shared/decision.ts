@@ -11,7 +11,7 @@
  * returned exactly as the model stated it, or rejected with human-readable errors.
  */
 import { z } from 'zod';
-import { MAX_EXPLANATION_CHARS, type BetInput, type BetType, type PlayerDecision } from './contracts.js';
+import { MAX_EXPLANATION_CHARS, MAX_STRATEGY_CHARS, type BetInput, type BetType, type PlayerDecision } from './contracts.js';
 
 // ───────────────────────────── bet types ─────────────────────────────
 
@@ -81,6 +81,10 @@ export const PLAYER_DECISION_JSON_SCHEMA: Record<string, unknown> = {
         additionalProperties: false,
       },
     },
+    strategy: {
+      type: 'string',
+      description: `Short name of the betting strategy you are following (at most ${MAX_STRATEGY_CHARS} characters are kept).`,
+    },
     explanation: {
       type: 'string',
       description: `Optional short reason (at most ${MAX_EXPLANATION_CHARS} characters are kept).`,
@@ -89,6 +93,27 @@ export const PLAYER_DECISION_JSON_SCHEMA: Record<string, unknown> = {
   required: ['action'],
   additionalProperties: false,
 };
+
+/**
+ * The decision schema for one session. When the session does not let the model end it
+ * (limits.allowModelStop false), "stop" is removed from the action enum so structured-output
+ * providers cannot produce it; parse-time checks still reject a "stop" that slips through.
+ */
+export function decisionJsonSchema(opts: { allowStop: boolean }): Record<string, unknown> {
+  if (opts.allowStop) return PLAYER_DECISION_JSON_SCHEMA;
+  const props = PLAYER_DECISION_JSON_SCHEMA.properties as Record<string, Record<string, unknown>>;
+  return {
+    ...PLAYER_DECISION_JSON_SCHEMA,
+    properties: {
+      ...props,
+      action: {
+        type: 'string',
+        enum: DECISION_ACTIONS.filter((a) => a !== 'stop'),
+        description: '"bet" to place the bets listed in "bets", or "skip" to sit this round out.',
+      },
+    },
+  };
+}
 
 // ───────────────────────────── zod mirror ─────────────────────────────
 
@@ -109,6 +134,7 @@ export const PlayerDecisionSchema = z
   .strictObject({
     action: z.enum(DECISION_ACTIONS),
     bets: z.array(BetInputSchema).optional(),
+    strategy: z.string().optional(),
     explanation: z.string().optional(),
   })
   .superRefine((d, ctx) => {
@@ -267,7 +293,11 @@ export function validateDecisionObject(value: unknown):
   }
   const d = r.data;
   const explanationText = d.explanation === undefined ? '' : truncateChars(d.explanation.trim(), MAX_EXPLANATION_CHARS);
-  const explanation = explanationText === '' ? {} : { explanation: explanationText };
+  const strategyText = d.strategy === undefined ? '' : truncateChars(d.strategy.trim(), MAX_STRATEGY_CHARS);
+  const explanation = {
+    ...(strategyText === '' ? {} : { strategy: strategyText }),
+    ...(explanationText === '' ? {} : { explanation: explanationText }),
+  };
 
   if (d.action === 'bet') {
     // Copy each bet field by field, exactly as stated (numbers keep the model's order).

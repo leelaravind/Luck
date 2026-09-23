@@ -166,7 +166,9 @@ describe('buildObservation', () => {
   });
 
   it('reports roundsRemaining from maxRounds', () => {
-    expect(buildObservation(session({ roundsPlayed: 2 }), []).limits.roundsRemaining).toBe(48);
+    expect(buildObservation(session({ roundsPlayed: 2, limits: { ...DEFAULT_LIMITS, maxRounds: 50 } }), []).limits.roundsRemaining).toBe(48);
+    // Default: no round limit (sessions run until the balance is exhausted or the user stops).
+    expect(DEFAULT_LIMITS.maxRounds).toBeNull();
     expect(buildObservation(session({ limits: { ...DEFAULT_LIMITS, maxRounds: null } }), []).limits.roundsRemaining).toBeNull();
   });
 });
@@ -179,9 +181,19 @@ describe('prompts', () => {
   it('system prompt states rules, payouts, limits and the JSON-only format', () => {
     const sys = buildSystemPrompt(obs);
     expect(sys).toMatch(/JSON object and nothing else/);
-    expect(sys).toMatch(/at most 280 characters/);
+    expect(sys).toMatch(/at most 400 characters/);
     expect(sys).toMatch(/Do not include hidden reasoning/);
     expect(sys).toMatch(/Outcomes are independent and cannot be predicted/);
+    // Asks for a named strategy, gives no concrete bet as an example (no anchoring on red), and by
+    // default does not offer "stop".
+    expect(sys).toMatch(/"strategy" names the betting strategy/);
+    expect(sys).toMatch(/Every bet type in PAYOUTS is equally allowed/);
+    expect(sys).not.toContain('"type":"red"');
+    expect(sys).not.toContain('{"action":"stop"');
+    expect(sys).toMatch(/You cannot end the session/);
+    const withStop = buildSystemPrompt(obs, { allowStop: true });
+    expect(withStop).toContain('{"action":"stop"');
+    expect(withStop).not.toMatch(/You cannot end the session/);
     expect(sys).toContain('straight 35:1');
     expect(sys).toContain(`<= ${DEFAULT_LIMITS.maxStakePerRound}`);
     expect(sys).toContain(`multiple of ${DEFAULT_LIMITS.stakeIncrement}`);
@@ -277,8 +289,10 @@ describe('budget pre-check', () => {
     expect(checkBudget({ ...base, records: recs })).toMatchObject({ allowed: true, worstCaseMicros: 80_000 });
   });
 
-  it('refuses when there is no budget or the cost cannot be bounded', () => {
-    expect(checkBudget({ capabilities: caps, pricing, promptChars: 10, maxOutputTokens: 1, budgetMicros: null, records: [] }).allowed).toBe(false);
+  it('no app spending limit allows the call; a set limit with an unboundable cost refuses', () => {
+    const unlimited = checkBudget({ capabilities: caps, pricing, promptChars: 10, maxOutputTokens: 1, budgetMicros: null, records: [] });
+    expect(unlimited.allowed).toBe(true);
+    expect(unlimited.remainingMicros).toBeNull();
     expect(checkBudget({ capabilities: caps, pricing: null, promptChars: 10, maxOutputTokens: 1, budgetMicros: 1e6, records: [] }).allowed).toBe(false);
     expect(estimateInputTokens(10)).toBe(4);
   });

@@ -97,3 +97,15 @@ export function playerLabel(player: PlayerConfig, providers: readonly ProviderSt
   const label = providers.find((p) => p.kind === player.kind)?.capabilities.label ?? player.kind;
   return player.model ? `${label} · ${player.model}` : label;
 }
+
+/**
+ * Split a stored decision explanation into the model's stated strategy and the rest. The server
+ * stores "Strategy: <name>" on the first line when the model named one.
+ */
+export function splitStatedStrategy(text: string | null | undefined): { strategy: string | null; explanation: string | null } {
+  if (!text) return { strategy: null, explanation: null };
+  const m = /^Strategy: ([^\n]+)(?:\n([\s\S]*))?$/.exec(text);
+  if (!m) return { strategy: null, explanation: text };
+  const rest = m[2]?.trim() ?? '';
+  return { strategy: m[1]!.trim(), explanation: rest === '' ? null : rest };
+}

@@ -59,7 +59,7 @@ ready ──start──► running ──pause──► pause_requested ──(r
   │                 │                                                    │
   └──step──► (one round) ──► paused (step_complete)                      │
   any non-terminal ──stop──► stop_requested ──(committed round settles)──► stopped (terminal)
-  limits (rounds, runtime, balance, budget, model "stop") ──► completed (terminal)
+  balance below the minimum stake, or an opt-in limit (rounds, runtime, budget, model "stop") ──► completed (terminal)
 ```
 
 - One runner and at most one in-flight model decision per session.
@@ -78,7 +78,8 @@ ready ──start──► running ──pause──► pause_requested ──(r
 
 A model receives only a `GameObservation`: rules, payouts, limits, its balance, and a bounded history of
 *settled* rounds. It never receives RNG state, the pending round, database ids, configuration or secrets.
-It answers with `{"action": "bet" | "skip" | "stop", "bets": [...], "explanation": "..."}`, which is parsed
+It answers with `{"action": "bet" | "skip", "bets": [...], "strategy": "...", "explanation": "..."}` ("stop" only
+when the session allows the model to end it), which is parsed
 strictly (`parseDecision`) and then validated by the same rules as a human bet.
 
 ## Usage, cost and budgets
@@ -87,7 +88,8 @@ strictly (`parseDecision`) and then validated by the same rules as a human bet.
   only when the provider reports them; unknown usage is flagged, never guessed.
 - Cost basis is explicit: *provider-reported* (Claude Code CLI's own estimate), *estimated from pricing*
   (tokens × a labelled pricing assumption), *local — no cloud inference charge*, or *unknown*.
-- The **app spending limit** is checked conservatively *before* every paid request using the worst case
+- The optional **app spending limit** (off by default — sessions then run until the balance is exhausted or
+  the user stops) is checked conservatively *before* every paid request using the worst case
   (estimated prompt tokens + the maximum output tokens). It is distinct from any provider quota, which
   is shown only when the provider actually reports rate-limit information.
 
@@ -100,7 +102,8 @@ strictly (`parseDecision`) and then validated by the same rules as a human bet.
 - API keys live only in the server's environment (`.env`, gitignored). They are never sent to the
   browser, stored in SQLite, logged or exported; error messages pass through a redactor.
 - The Claude Code CLI path comes only from `.env`; the HTTP API cannot choose an executable. The CLI is
-  spawned without a shell, with all tools, MCP servers, settings and session persistence disabled.
+  spawned without a shell, with all tools, MCP servers and settings disabled; each Luck session keeps one
+  Claude Code conversation (`--session-id`, then `--resume`).
 
 See also: [providers.md](providers.md), [providers-cli-laya.md](providers-cli-laya.md),
 [configuration.md](configuration.md), [testing.md](testing.md), [troubleshooting.md](troubleshooting.md).

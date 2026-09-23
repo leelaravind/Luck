@@ -3,13 +3,14 @@
  * JSON-only output format; the user prompt carries the GameObservation as JSON (nothing else
  * about the game is ever sent).
  */
-import { MAX_EXPLANATION_CHARS, type GameObservation } from '../../shared/contracts.js';
+import { MAX_EXPLANATION_CHARS, MAX_STRATEGY_CHARS, type GameObservation } from '../../shared/contracts.js';
 
 /** Max validation errors echoed back in a corrective retry note (bounded prompt growth). */
 export const MAX_CORRECTIVE_ERRORS = 6;
 const MAX_CORRECTIVE_ERROR_CHARS = 200;
 
-export function buildSystemPrompt(obs: GameObservation): string {
+export function buildSystemPrompt(obs: GameObservation, opts: { allowStop?: boolean } = {}): string {
+  const allowStop = opts.allowStop === true;
   const l = obs.limits;
   const payouts = obs.betTypes.map((b) => `${b.type} ${b.payout}:1`).join(', ');
   const selections = obs.betTypes.map((b) => `- ${b.type}: ${b.selection}`).join('\n');
@@ -39,14 +40,18 @@ export function buildSystemPrompt(obs: GameObservation): string {
     '',
     'OUTPUT FORMAT',
     'Reply with ONE JSON object and nothing else: no markdown, no code fences, no text before or after it.',
-    'Allowed shapes:',
-    '{"action":"bet","bets":[{"type":"red","stake":100},{"type":"straight","numbers":[17],"stake":20}],"explanation":"..."}',
-    '{"action":"skip","explanation":"..."}',
-    '{"action":"stop","explanation":"..."}',
-    '- "bet" places the listed bets for the upcoming round; "skip" sits the round out; "stop" ends the session.',
-    `- "explanation" is optional, plain text, at most ${MAX_EXPLANATION_CHARS} characters, stating your choice briefly.`,
+    'Allowed shapes (placeholders in <angle brackets>; the bet types shown are format examples, not suggestions):',
+    '{"action":"bet","bets":[{"type":"<bet type>","numbers":[<numbers if the type needs them>],"index":<1-3 if the type needs it>,"stake":<integer>}],"strategy":"<name>","explanation":"<why>"}',
+    '{"action":"skip","strategy":"<name>","explanation":"<why>"}',
+    ...(allowStop ? ['{"action":"stop","strategy":"<name>","explanation":"<why>"}'] : []),
+    allowStop
+      ? '- "bet" places the listed bets for the upcoming round; "skip" sits the round out; "stop" ends the session.'
+      : '- "bet" places the listed bets for the upcoming round; "skip" sits the round out. You cannot end the session: it runs until your balance cannot cover the minimum stake or the user stops it.',
+    '- Every bet type in PAYOUTS is equally allowed, alone or combined. Choose the types, numbers and stakes your own strategy calls for; you may change them from round to round.',
+    `- "strategy" names the betting strategy you are following (for example flat betting, Martingale, D'Alembert, Fibonacci, Labouchère, sector or number coverage, or your own), at most ${MAX_STRATEGY_CHARS} characters.`,
+    `- "explanation" is plain text, at most ${MAX_EXPLANATION_CHARS} characters, saying why this round's bets follow that strategy.`,
     '- Do not include hidden reasoning, chain-of-thought or analysis in the reply.',
-    '- Outcomes are independent and cannot be predicted. Do not claim a strategy can beat the house edge.',
+    '- Outcomes are independent and cannot be predicted; no strategy removes the house edge. Say honestly what your strategy aims for (for example staying in the game longer, or chasing a larger win) rather than claiming it guarantees a win.',
     '- Output that is not valid JSON or breaks a rule or limit is rejected; it is never changed into another bet.',
   ].join('\n');
 }

@@ -12,12 +12,15 @@ export const CREDIT_FIELDS = ['startingBalance', 'minStake', 'stakeIncrement', '
 export const INT_FIELDS = ['maxBetsPerRound', 'maxOutputTokens', 'maxRetries', 'maxConsecutiveFailures', 'historyWindow'] as const;
 export const OPTIONAL_FIELDS = ['maxRounds', 'maxRuntimeMin', 'budgetUsd'] as const;
 export const SECONDS_FIELDS = ['decisionTimeoutSec'] as const;
+/** Checkbox fields stored as 'true' / 'false'. */
+export const FLAG_FIELDS = ['allowModelStop'] as const;
 
 export type LimitField =
   | (typeof CREDIT_FIELDS)[number]
   | (typeof INT_FIELDS)[number]
   | (typeof OPTIONAL_FIELDS)[number]
-  | (typeof SECONDS_FIELDS)[number];
+  | (typeof SECONDS_FIELDS)[number]
+  | (typeof FLAG_FIELDS)[number];
 
 export type LimitsValues = Record<LimitField, string>;
 export type LimitsErrors = Partial<Record<LimitField, string>>;
@@ -50,6 +53,7 @@ export function limitsToValues(l: SessionLimits): LimitsValues {
     maxRetries: String(l.maxRetries),
     maxConsecutiveFailures: String(l.maxConsecutiveFailures),
     historyWindow: String(l.historyWindow),
+    allowModelStop: l.allowModelStop ? 'true' : 'false',
   };
 }
 
@@ -119,6 +123,7 @@ export function valuesToLimits(v: LimitsValues): { limits: SessionLimits | null;
       maxRetries: ints.maxRetries!,
       maxConsecutiveFailures: ints.maxConsecutiveFailures!,
       historyWindow: ints.historyWindow!,
+      allowModelStop: v.allowModelStop === 'true',
     },
   };
 }

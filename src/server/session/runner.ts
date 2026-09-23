@@ -87,14 +87,9 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
       throw new GameError('invalid_state', `Choose a model for ${adapter.capabilities.label} before starting.`);
     }
 
-    if (adapter.capabilities.paid) {
-      if (s.limits.budgetMicros === null) {
-        throw new GameError(
-          'budget_exhausted',
-          `${adapter.capabilities.label} may incur charges, but this session has no spending budget. ` +
-            'Create a session with a budget (limits.budgetMicros) to use a paid provider.',
-        );
-      }
+    // With no app spending limit (budgetMicros null — the user's explicit choice) nothing needs to be
+    // bounded, so a paid provider may start without a pricing assumption.
+    if (adapter.capabilities.paid && s.limits.budgetMicros !== null) {
       const pricing = resolvePricing(core, kind, s.player, cfg.model);
       if (!pricing && !adapter.capabilities.reportsCost) {
         throw new GameError(

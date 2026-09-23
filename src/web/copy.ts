@@ -30,6 +30,8 @@ export const COPY = {
   inPlay: 'In play',
   demoTagline: 'rule-based, not AI',
   modelExplanationTitle: "Model's stated explanation (unverified)",
+  modelStrategyTitle: "Model's stated strategy (unverified)",
+  modelStrategyNote: 'The strategy name is the model’s own claim. Roulette outcomes are independent; no strategy removes the house edge.',
   modelExplanationNote:
     'Text the model returned alongside its bet. It is not evidence of how the decision was made and does not change the odds.',
   appBudgetTitle: 'App spending limit',
@@ -135,7 +137,8 @@ export const MISSING_REASON = {
   speedUnknown: 'Output speed needs reported output tokens and a measured duration.',
   quota: 'The provider did not send rate-limit or quota information with its responses.',
   quotaNever: 'This provider does not expose quota or rate-limit information.',
-  budgetNone: 'No app spending limit is set for this session. Paid providers will refuse to start.',
+  budgetNone:
+    'No app spending limit is set: the player continues until the balance cannot cover the minimum stake or you press Stop. API-key providers bill every request; Claude Code on a subscription uses plan quota.',
   notAi: 'This session is not played by an AI model, so there is no model usage.',
   latestDecisionNone: 'No decision has been requested yet.',
 } as const;
@@ -149,7 +152,14 @@ export const LIMIT_FIELD_COPY = {
   maxBetsPerRound: { label: 'Max bets per round', hint: 'Positions' },
   maxRounds: { label: 'Max rounds', hint: 'Blank = unlimited' },
   maxRuntimeMin: { label: 'Max autonomous runtime', hint: 'Minutes · blank = unlimited' },
-  budgetUsd: { label: 'App spending limit (USD)', hint: 'Paid providers only · blank = none (paid providers refuse to start)' },
+  budgetUsd: {
+    label: 'App spending limit (USD)',
+    hint: 'Optional · blank = no limit. With an API key every request is billed to your account; Claude Code on a subscription uses plan quota instead',
+  },
+  allowModelStop: {
+    label: 'Let the model end the session',
+    hint: 'Off = the game runs until the balance cannot cover the minimum stake or you press Stop',
+  },
   maxOutputTokens: { label: 'Max output tokens', hint: 'Per model request' },
   decisionTimeoutSec: { label: 'Decision timeout', hint: 'Seconds per attempt' },
   maxRetries: { label: 'Retries per decision', hint: 'After the first attempt' },

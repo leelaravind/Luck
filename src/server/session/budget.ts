@@ -70,7 +70,8 @@ export function conservativeSpentMicros(
 }
 
 export type BudgetCheck =
-  | { allowed: true; worstCaseMicros: UsdMicros; spentMicros: UsdMicros; remainingMicros: UsdMicros }
+  /** remainingMicros null = no app spending limit (then worstCaseMicros may be null too). */
+  | { allowed: true; worstCaseMicros: UsdMicros | null; spentMicros: UsdMicros; remainingMicros: UsdMicros | null; message?: string }
   | { allowed: false; worstCaseMicros: UsdMicros | null; spentMicros: UsdMicros; remainingMicros: UsdMicros | null; message: string };
 
 export function checkBudget(input: {
@@ -85,12 +86,13 @@ export function checkBudget(input: {
   const outstanding = input.outstandingAttempts ?? 0;
   const worst = worstCaseAttemptMicros(input);
   if (input.budgetMicros === null) {
+    // No app spending limit: the user chose to let the player run until the balance is exhausted.
     return {
-      allowed: false,
+      allowed: true,
       worstCaseMicros: worst,
       spentMicros: conservativeSpentMicros(input.records, worst ?? 0, outstanding),
       remainingMicros: null,
-      message: 'No spending budget is set for this paid provider. Set a budget in the session limits before starting.',
+      message: 'No app spending limit is set for this session.',
     };
   }
   if (worst === null) {
