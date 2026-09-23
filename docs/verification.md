@@ -100,7 +100,11 @@ Fresh `git clone https://github.com/leelaravind/Luck` of the last code commit (`
 (214 packages) → `npm run typecheck` (0 errors) → `npm test` (59 test files, 1 275 tests passed, 0 failed) →
 `npm run build` → `npm run secret-scan` (clean, 228 files) → `npm run validate:components` (51 files) — all
 succeeded. CI for the same commit: 17 of 17 jobs green (Windows, macOS and Linux × Node 22.22.2, 22.x, 24.15.0,
-24.x, 26.x; the production dependency audit; the full-history gitleaks scan). An earlier clean checkout also
+24.x, 26.x; the production dependency audit; the full-history gitleaks scan) — after one re-run: the first run's
+Windows / Node 24.15.0 job lost the test worker running `src/server/http/sse.test.ts` to a native crash of the
+Node process (exit code 0xC0000409) with no failing assertion (1 272 of 1 275 tests had passed; the other 3 were not
+reported because the worker ended); the re-run of that job passed, and the same job had passed on the six commits
+before. An earlier clean checkout also
 started the built single-port server and loaded the UI.
 
 **ZIP download (no git).** Before the first fix round a ZIP download failed 1 test and `npm run secret-scan`,
