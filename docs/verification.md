@@ -237,6 +237,28 @@ A third reviewer tried to refute the third round's changes with numeric probes.
   is retried; a response that started and then stalled fails the test, and the warm-up no longer retries inside
   its own retry loop.
 
+## Fifth fix round — second adversarial review of the CLI bound
+
+A fourth reviewer refuted the fourth round's bound with a call-by-call simulation:
+
+- **After a failed attempt without token counts the bound fell to the $0.05 floor (high).** The CLI discards a
+  conversation whose first turn failed, so the next attempt is a fresh first turn; it is now bounded like one, plus
+  what the failed attempt may have added.
+- **Continuations were priced too low (high).** Each continuation re-sends the previous answer as new input, which is
+  written to the cache (1.25–2×), not read (0.1×); and below the cacheable size (4 096 tokens) everything is re-sent at
+  the input price — as in the live test's first call (4 calls, 12 842 input tokens for a 2 971-token context). The
+  cold turn is now modelled call by call.
+- **A pricing assumption could lower the bound (medium);** it is now combined rate by rate with the other prices, so
+  it can only raise it. **The $10 ceiling was not the dearest Claude price (medium);** it is now $15/MTok (Claude
+  Opus 4 / 4.1). **The first-turn context was below the live measurement (medium);** the estimate is now 1 token per
+  2 characters (was 3, for every provider) plus 3 000 tokens the CLI adds (was 1 000). Attempts after the newest turn
+  with counts, an all-zero error result, and a non-finite bound (low) are handled.
+- `units.test.ts` now checks the bound against an independent call-by-call simulation (cache minimum, continuation
+  writes, 2.2 characters per token) for 7 models, both cache lifetimes, 3 output caps, 2 prompt sizes and 4 token
+  mixes, and the first turn and the turn after a failed attempt for every model up to the ceiling. Remaining limits
+  (documented in [providers-cli-laya.md](providers-cli-laya.md#maintained-conversation-and-connection-check-added-after-live-testing)):
+  a model switch between turns with no model or an alias configured, and the CLI's automatic compaction.
+
 ## Outstanding
 
 - **Old commits are still viewable by SHA on GitHub.** The history was rewritten and the CI runs of the 5 commits

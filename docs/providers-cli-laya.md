@@ -305,22 +305,30 @@ abort, unreachable server.
   ($0.0062 − $0.0028). Because the conversation grows, input tokens per round grow too; the app budget check
   accounts for this (see below).
 - **App spending limit with the CLI.** Before each turn Luck bounds what the turn could cost if the prompt cache
-  has expired: the whole conversation (the newest turn whose input, cache-read, cache-write and output tokens were
-  all reported, plus the new observation) written again at the 1-hour cache-write price (2× input), re-read by up
-  to 3 continuation calls, plus 4 × the output cap at 5× input. The price per token is, in this order: your pricing
-  assumption; the highest price the last turn's CLI-reported cost allows — its cost divided by its tokens, each
-  weighted with the cheapest rate that model has (cache reads 0.025× on Claude Fable 5.1, 0.05× on Claude Opus 5.5,
-  0.1× on the other models the bundled reference prices, 0.025× for any other model), used only when that turn was
-  made with the configured model; the configured model's built-in price; else the highest known Claude price
-  ($10/MTok). On the first turn the context is the prompt plus 1 000 tokens the CLI adds. The next turn is sent only
-  while spent + that bound fits the limit, so a long session can use most of its limit (a 40-turn test
-  conversation of 60 000 tokens on a 0.1× model: worst case 169 k µ$ against 384 k µ$ spent). On Claude Fable 5.1 a
-  cold turn really costs up to 80 × a warm one, so the bound — and the share of a small limit that can be used — is
-  correspondingly more cautious. When the CLI reports no tokens, the bound falls back to max(2 × the last turn, the
-  session's CLI total so far), which stops a session at about half its limit. The floor is $0.05.
-  **Limit:** with no model configured the CLI uses its own default model, which could change between two turns
-  (e.g. after a CLI update) to a dearer one; the CLI's own `--max-budget-usd` stop (the remaining budget) still
-  ends such a turn after the API call in progress.
+  has expired, call by call: the first call writes the whole context at the 1-hour cache-write price (2× input);
+  each of up to 3 continuations (the CLI continues when the output cap is hit) re-reads the context and the earlier
+  answers (at the full input price when the context is too small to be cached) and writes the previous answer plus a
+  continuation message as new input; every call answers with the full output cap (5× input). The context is the
+  newest turn whose input, cache-read, cache-write and output tokens were all reported, plus the new observation
+  (counted as 1 token per 2 characters — the observation is JSON with many digits); on the first turn, or when only
+  failed attempts without token counts exist, the observation plus 3 000 tokens the CLI adds; plus, for every later
+  attempt without counts, what it may have added. The price per token is, rate by rate, the dearest of: your
+  pricing assumption; the highest price the last turn's CLI-reported cost allows (its cost divided by its tokens,
+  each weighted with the cheapest rate that model has — cache reads 0.025× on Claude Fable 5.1, 0.05× on Claude Opus
+  5.5, 0.1× on the other models the bundled reference prices, 0.025× for any other model — used only when that turn
+  was made with the configured model); the configured model's built-in price; and, when neither of the last two is
+  known, the ceiling of $15/MTok input. A pricing assumption can therefore only raise the bound. The next turn is
+  sent only while spent + that bound fits the limit, so a long session can use most of a limit that is large
+  compared with one cold turn (a 40-turn test conversation of 60 000 tokens on a 0.1× model: worst case 173 k µ$
+  against 384 k µ$ spent). A small limit may not cover even the first turn: with no model configured and the
+  default 1 000-token output cap the first turn's bound is about $0.72; configuring a model with a built-in price
+  (e.g. `claude-opus-5-5`) lowers it (about $0.19). The floor is $0.05; a bound that is not a number refuses the
+  turn. Checked against an independent call-by-call simulation for 7 models, both cache lifetimes, 3 output caps,
+  2 prompt sizes and 4 token mixes (`units.test.ts`).
+  **Limits:** with no model configured, or an alias, the CLI may switch to a dearer model between two turns (e.g.
+  after a CLI update), and the CLI's automatic compaction of a very long conversation is an extra call not
+  modelled. The CLI's own `--max-budget-usd` stop (the remaining budget) still ends such a turn after the API call
+  in progress.
 - **Framing.** The opening message states the true context (a local simulation for an AI decision experiment, virtual
   credits only). It does not instruct the model to ignore its guidelines. If a model declines, the refusal is recorded
   as invalid output and the session pauses — it is never converted into a bet.

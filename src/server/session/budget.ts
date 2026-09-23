@@ -18,8 +18,11 @@ import { DEFAULT_PRICING, worstCaseCostMicros } from '../providers/pricing.js';
 
 /** Floor for a Claude Code CLI call's worst case ($0.05), with or without a pricing assumption. */
 export const CLI_MIN_WORST_CASE_MICROS = 50_000;
-/** Conservative characters-per-token ratio for the input estimate (real text is usually ~4). */
-const CHARS_PER_TOKEN_ESTIMATE = 3;
+/**
+ * Conservative characters-per-token ratio for the input estimate: English prose is ~4, but the observation is
+ * JSON with many digits, and newer Claude tokenizers produce up to ~35% more tokens for the same text.
+ */
+const CHARS_PER_TOKEN_ESTIMATE = 2;
 
 /** Attempts that may have been billed even though no cost was reported. */
 // Only 'rate_limited' is excluded: a 429 is rejected before any work is done. 'error' is included on
@@ -32,12 +35,24 @@ export function estimateInputTokens(promptChars: number): number {
 
 /**
  * A Claude Code CLI turn can make up to CLI_MAX_CALLS API calls: when the output cap is hit the CLI
- * continues up to 3 more times (observed, see docs/providers-cli-laya.md), each call re-reading the
- * context and the answer so far.
+ * continues up to 3 more times (observed, see docs/providers-cli-laya.md). Each continuation re-sends
+ * the context and the answers so far and adds the previous answer plus a short continuation message
+ * (at most CLI_CONTINUATION_TOKENS) as new input.
  */
 const CLI_MAX_CALLS = 4;
-/** Context the CLI adds to the first turn besides Luck's prompt (environment, date, model, reminders). */
-const CLI_ADDED_TOKENS = 1_000;
+const CLI_CONTINUATION_TOKENS = 200;
+/**
+ * Context the CLI adds to the first turn besides Luck's prompt: its environment, date, model and
+ * budget entries, the opening message and the JSON schema (the one live measurement: 2 971 input
+ * tokens for a 5 409-character prompt).
+ */
+const CLI_ADDED_TOKENS = 3_000;
+/**
+ * Below the minimum cacheable prompt (4 096 tokens for some Claude models) nothing is cached, so a
+ * continuation re-sends the context at the full input price. Contexts below twice that (the estimate
+ * may be up to 2× the real count) are priced that way.
+ */
+const UNCACHED_CONTEXT_TOKENS = 2 * 4_096;
 
 /**
  * Cache-read price as a fraction of base input for the Claude models whose rate the bundled Claude API
@@ -59,8 +74,12 @@ const CACHE_READ_RATIO: Readonly<Record<string, number>> = {
   'haiku-4-5': 0.1,
 };
 const LOWEST_CACHE_READ_RATIO = Math.min(...Object.values(CACHE_READ_RATIO));
-/** The highest base input price of a known Claude model (µ$ per token = $ per MTok), for unknown models. */
-const HIGHEST_INPUT_PRICE = Math.max(
+/**
+ * Price ceiling (µ$ per token = $ per MTok of base input) for a turn whose model price is not known: the
+ * dearest Claude list price, $15/MTok input (Claude Opus 4 / 4.1, still listed), or a dearer built-in one.
+ */
+const CEILING_INPUT_PRICE = Math.max(
+  15,
   ...Object.entries(DEFAULT_PRICING)
     .filter(([key]) => key.startsWith('anthropic:'))
     .map(([, p]) => p.inputPerMTokUsd),
@@ -93,6 +112,7 @@ function sameModel(configured: string | null | undefined, reported: string | nul
 
 /** Prices of the next turn in µ$ per token. */
 interface TurnPrices {
+  input: number;
   read: number;
   write: number;
   output: number;
@@ -100,23 +120,35 @@ interface TurnPrices {
 
 /** Claude price structure on a base input price: read ≤ 0.1×, 1-hour cache write 2×, output 5×. */
 function pricesFromBase(input: number): TurnPrices {
-  return { read: 0.1 * input, write: 2 * input, output: 5 * input };
+  return { input, read: 0.1 * input, write: 2 * input, output: 5 * input };
 }
 
-/** A pricing assumption, conservatively: a missing read rate = input, a write at least the 1-hour 2×. */
+/** A pricing entry, conservatively: a missing read rate = input, a write at least the 1-hour 2×. */
 function pricesFromPricing(p: Pricing): TurnPrices {
   const input = p.inputPerMTokUsd;
   return {
+    input,
     read: p.cacheReadPerMTokUsd ?? input,
     write: Math.max(p.cacheWritePerMTokUsd ?? 1.25 * input, 2 * input),
     output: p.outputPerMTokUsd,
   };
 }
 
-/** All four token counts of an attempt, or null when any is unreported. */
+/** Rate by rate the dearest of the candidates: a lower candidate can never lower the bound. */
+function dearest(candidates: readonly TurnPrices[]): TurnPrices {
+  return {
+    input: Math.max(...candidates.map((c) => c.input)),
+    read: Math.max(...candidates.map((c) => c.read)),
+    write: Math.max(...candidates.map((c) => c.write)),
+    output: Math.max(...candidates.map((c) => c.output)),
+  };
+}
+
+/** All four token counts of an attempt, or null when any is unreported or all are zero (an empty error result). */
 function tokensOf(r: UsageRecord): { input: number; read: number; write: number; output: number } | null {
   if (!r.known || r.inputTokens === null || r.outputTokens === null || r.cacheReadTokens === null || r.cacheWriteTokens === null) return null;
-  return { input: r.inputTokens, read: r.cacheReadTokens, write: r.cacheWriteTokens, output: r.outputTokens };
+  const t = { input: r.inputTokens, read: r.cacheReadTokens, write: r.cacheWriteTokens, output: r.outputTokens };
+  return t.input + t.read + t.write + t.output > 0 ? t : null;
 }
 
 /**
@@ -126,20 +158,27 @@ function tokensOf(r: UsageRecord): { input: number; read: number; write: number;
  */
 function highestBasePrice(r: UsageRecord): number | null {
   const t = tokensOf(r);
-  if (!t || r.costMicros === null || !(r.costMicros > 0)) return null;
+  if (!t || r.costMicros === null || !(r.costMicros > 0) || !Number.isFinite(r.costMicros)) return null;
   const ratio = CACHE_READ_RATIO[normalizeClaudeModel(r.model) ?? ''] ?? LOWEST_CACHE_READ_RATIO;
   const weighted = t.input + ratio * t.read + 1.25 * t.write + 4 * t.output;
   return weighted > 0 ? r.costMicros / weighted : null;
 }
 
 /**
- * A turn whose prompt cache has expired: the whole context written once, re-read by every further
- * call together with the answer so far, and every call answering with the full output cap.
+ * A turn whose prompt cache has expired, call by call: the first call writes the whole context and
+ * answers with the full output cap; each continuation re-reads the context and the earlier answers
+ * (at the full input price for a context too small to be cached), writes the previous answer plus the
+ * continuation message as new input, and answers with the full cap again.
  */
 function coldTurnMicros(p: TurnPrices, contextTokens: number, maxOutputTokens: number): number {
   const out = Math.max(0, maxOutputTokens);
-  const more = CLI_MAX_CALLS - 1;
-  return p.write * contextTokens + more * p.read * (contextTokens + more * out) + CLI_MAX_CALLS * p.output * out;
+  const reread = contextTokens < UNCACHED_CONTEXT_TOKENS ? p.input : p.read;
+  let cost = p.write * contextTokens + p.output * out;
+  for (let call = 2; call <= CLI_MAX_CALLS; call++) {
+    const earlierAnswers = (call - 2) * (out + CLI_CONTINUATION_TOKENS);
+    cost += reread * (contextTokens + earlierAnswers) + p.write * (out + CLI_CONTINUATION_TOKENS) + p.output * out;
+  }
+  return cost;
 }
 
 /**
@@ -149,17 +188,20 @@ function coldTurnMicros(p: TurnPrices, contextTokens: number, maxOutputTokens: n
  * prompt cache has expired (e.g. a session resumed after a long pause) the whole context is written
  * again at the cache-write price — up to 80× a cache read on Claude Fable 5.1.
  *
- * Prices of the next turn: the pricing assumption when one exists; else the highest base price the
- * last priced turn's cost allows (highestBasePrice), when it was made with the configured model; else
- * the configured model's built-in price; else the highest known Claude price. The context is the
- * newest turn whose four token counts are all reported plus the new prompt (on the first turn: the
- * prompt plus what the CLI adds), priced as a cold turn (coldTurnMicros). When the CLI reported no
- * tokens for any turn, the older, approximate rule max(2 × the last turn, the total so far) is used.
- * The result is at least the pricing estimate and the 50 000 µ$ floor.
+ * Prices of the next turn, rate by rate the dearest of: the pricing assumption; the highest base price
+ * the last priced turn's cost allows (highestBasePrice), when it was made with the configured model;
+ * the configured model's built-in price. When neither of the last two is available, the ceiling price
+ * is added. Context: the newest turn with its four token counts reported plus the new prompt, or — with
+ * no such turn (the first turn, or only failed attempts whose conversation the CLI discarded) — the new
+ * prompt plus what the CLI adds; either way plus, for every later attempt without token counts, what
+ * that attempt may have added (a prompt and 4 answers). Priced as a cold turn (coldTurnMicros). When the
+ * last priced turn reported no tokens, the older rule max(2 × the last turn, the total so far) can only
+ * raise it. The result is at least the pricing estimate and the 50 000 µ$ floor.
  *
- * Limit: with no model configured the CLI uses its own default model, which could change between two
- * turns (e.g. after a CLI update) to a dearer one; that turn can then cost more than this bound. The
- * CLI's own --max-budget-usd stop (the remaining budget) still ends it after the API call in progress.
+ * Limits (documented): with no model configured, or an alias, the CLI may switch to a dearer model
+ * between two turns (e.g. after a CLI update), and the CLI's automatic compaction of a very long
+ * conversation is an extra call not modelled here. The CLI's own --max-budget-usd stop (the remaining
+ * budget) still ends such a turn after the API call in progress.
  */
 function cliWorstCase(input: {
   pricing: Pricing | null;
@@ -170,35 +212,37 @@ function cliWorstCase(input: {
   maxOutputTokens: number;
 }): UsdMicros {
   let lastPriced: UsageRecord | null = null;
-  let lastWithTokens: UsageRecord | null = null;
+  let lastWithTokens = -1;
   let total = 0;
-  for (const r of input.records) {
-    if (tokensOf(r)) lastWithTokens = r;
+  input.records.forEach((r, i) => {
+    if (tokensOf(r)) lastWithTokens = i;
     if (r.costBasis === 'provider-reported' && r.costMicros !== null && Number.isFinite(r.costMicros)) {
       lastPriced = r;
       total += r.costMicros;
     }
-  }
-  const historyPrice = lastPriced && sameModel(input.model, lastPriced.model) ? highestBasePrice(lastPriced) : null;
-  const configured = DEFAULT_PRICING[`anthropic:claude-${normalizeClaudeModel(input.model) ?? ''}`];
-  const prices = input.pricing
-    ? pricesFromPricing(input.pricing)
-    : historyPrice !== null
-      ? pricesFromBase(historyPrice)
-      : configured
-        ? pricesFromPricing(configured)
-        : pricesFromBase(HIGHEST_INPUT_PRICE);
+  });
+  const priced = lastPriced as UsageRecord | null;
 
+  const historyPrice = priced && sameModel(input.model, priced.model) ? highestBasePrice(priced) : null;
+  const builtIn = DEFAULT_PRICING[`anthropic:claude-${normalizeClaudeModel(input.model) ?? ''}`];
+  const candidates: TurnPrices[] = [];
+  if (input.pricing) candidates.push(pricesFromPricing(input.pricing));
+  if (historyPrice !== null) candidates.push(pricesFromBase(historyPrice));
+  if (builtIn) candidates.push(pricesFromPricing(builtIn));
+  if (historyPrice === null && !builtIn) candidates.push(pricesFromBase(CEILING_INPUT_PRICE));
+  const prices = dearest(candidates);
+
+  const out = Math.max(0, input.maxOutputTokens);
   const newTokens = estimateInputTokens(input.promptChars);
-  const lastTokens = lastWithTokens ? tokensOf(lastWithTokens) : null;
-  const context = lastTokens
-    ? lastTokens.input + lastTokens.read + lastTokens.write + lastTokens.output + newTokens
-    : input.records.length === 0
-      ? newTokens + CLI_ADDED_TOKENS
-      : null;
+  const last = lastWithTokens >= 0 ? tokensOf(input.records[lastWithTokens]!)! : null;
+  const laterAttempts = input.records.length - 1 - lastWithTokens;
+  const context =
+    (last ? last.input + last.read + last.write + last.output : CLI_ADDED_TOKENS) +
+    newTokens +
+    laterAttempts * (newTokens + CLI_MAX_CALLS * (out + CLI_CONTINUATION_TOKENS));
 
-  const conversation =
-    context !== null ? coldTurnMicros(prices, context, input.maxOutputTokens) : Math.max(2 * (lastPriced?.costMicros ?? 0), total);
+  let conversation = coldTurnMicros(prices, context, out);
+  if (priced && !tokensOf(priced)) conversation = Math.max(conversation, 2 * (priced.costMicros ?? 0), total);
   return Math.ceil(Math.max(input.pricingEstimate ?? 0, conversation, CLI_MIN_WORST_CASE_MICROS));
 }
 
@@ -218,7 +262,7 @@ function worstCaseAttemptMicros(input: {
     if (typeof w === 'number' && Number.isFinite(w)) estimate = w;
   }
   if (input.capabilities.kind === 'claude-cli' && (estimate !== null || input.capabilities.reportsCost)) {
-    return cliWorstCase({
+    const worst = cliWorstCase({
       pricing: input.pricing,
       pricingEstimate: estimate,
       model: input.model ?? null,
@@ -226,6 +270,8 @@ function worstCaseAttemptMicros(input: {
       promptChars: input.promptChars,
       maxOutputTokens: input.maxOutputTokens,
     });
+    // A non-finite bound (e.g. a NaN input) cannot be compared with the budget: treat it as unboundable.
+    return Number.isFinite(worst) ? worst : null;
   }
   return estimate === null ? null : Math.ceil(estimate);
 }
