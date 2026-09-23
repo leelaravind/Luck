@@ -85,7 +85,7 @@ session the server might have been started from. Added:
 | `CLAUDE_CODE_MAX_RETRIES` | `1` | The session runner owns retries; keep the CLI's own retry loop short. |
 | `DISABLE_AUTOUPDATER` | `1` | A game request must never update the shared CLI binary. |
 | `MAX_THINKING_TOKENS` | `0` | Extended thinking off. Live check 1 showed thinking on by default consuming the whole output cap (1542 of 1600 output tokens) so no decision was produced. |
-| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | session `maxOutputTokens` | Per-request output cap. Note: when the cap is hit the CLI itself continues up to 3 more times (observed), so the real output per decision can be up to ~4× the cap; `--max-budget-usd` still bounds cost. |
+| `CLAUDE_CODE_MAX_OUTPUT_TOKENS` | session `maxOutputTokens` | Per-request output cap (thinking counts inside it). Note: when the cap is hit the CLI itself continues up to 3 more times per turn (observed), nudges once after an answer that only thinks, and `--max-turns 2` allows a second turn — so one decision can make up to 10 API calls and produce up to ~10× the cap (Claude Code 2.1.280). `--max-budget-usd` still bounds cost when an app spending limit is set. |
 
 **Auth.** With `CLAUDE_CLI_USE_SUBSCRIPTION=true` (default) `ANTHROPIC_API_KEY` and
 `ANTHROPIC_AUTH_TOKEN` are never passed, so the CLI uses your Claude Code login (in `-p` mode the CLI
@@ -305,10 +305,11 @@ abort, unreachable server.
   ($0.0062 − $0.0028). Because the conversation grows, input tokens per round grow too; the app budget check
   accounts for this (see below).
 - **App spending limit with the CLI.** Before each turn Luck bounds what the turn could cost if the prompt cache
-  has expired, call by call: the first call writes the whole context at the 1-hour cache-write price (2× input);
-  each of up to 3 continuations (the CLI continues when the output cap is hit) re-reads the context and the earlier
-  answers (at the full input price when the context is too small to be cached) and writes the previous answer plus a
-  continuation message as new input; every call answers with the full output cap (5× input). The context is the
+  has expired, call by call, for a run of up to 10 API calls (2 turns × (1 call + 3 continuations after the output
+  cap + 1 nudge after an answer that only thinks)): the first call writes the whole context at the 1-hour
+  cache-write price (2× input); each later call re-reads the context and the earlier answers (at the full input
+  price unless the context is surely large enough to be cached) and writes the previous answer plus a short message
+  as new input; every call answers with the full output cap (5× input). The context is the
   newest turn whose input, cache-read, cache-write and output tokens were all reported, plus the new observation
   (counted as 1 token per 2 characters — the observation is JSON with many digits); on the first turn, or when only
   failed attempts without token counts exist, the observation plus 3 000 tokens the CLI adds; plus, for every later
@@ -319,15 +320,15 @@ abort, unreachable server.
   was made with the configured model); the configured model's built-in price; and, when neither of the last two is
   known, the ceiling of $15/MTok input. A pricing assumption can therefore only raise the bound. The next turn is
   sent only while spent + that bound fits the limit, so a long session can use most of a limit that is large
-  compared with one cold turn (a 40-turn test conversation of 60 000 tokens on a 0.1× model: worst case 173 k µ$
+  compared with one cold turn (a 40-turn test conversation of 60 000 tokens on a 0.1× model: worst case 239 k µ$
   against 384 k µ$ spent). A small limit may not cover even the first turn: with no model configured and the
-  default 1 000-token output cap the first turn's bound is about $0.72; configuring a model with a built-in price
-  (e.g. `claude-opus-5-5`) lowers it (about $0.19). The floor is $0.05; a bound that is not a number refuses the
+  default 1 000-token output cap the first turn's bound is about $2.30 (10 capped calls at the ceiling price);
+  configuring a model with a built-in price (e.g. `claude-opus-5-5`: about $0.61) or a lower output cap lowers it. The floor is $0.05; a bound that is not a number refuses the
   turn. Checked against an independent call-by-call simulation for 7 models, both cache lifetimes, 3 output caps,
   2 prompt sizes and 4 token mixes (`units.test.ts`).
   **Limits:** with no model configured, or an alias, the CLI may switch to a dearer model between two turns (e.g.
-  after a CLI update), and the CLI's automatic compaction of a very long conversation is an extra call not
-  modelled. The CLI's own `--max-budget-usd` stop (the remaining budget) still ends such a turn after the API call
+  after a CLI update); the CLI's automatic compaction of a very long conversation and its retry after a malformed
+  tool call are extra calls not modelled. The CLI's own `--max-budget-usd` stop (the remaining budget) still ends such a turn after the API call
   in progress.
 - **Framing.** The opening message states the true context (a local simulation for an AI decision experiment, virtual
   credits only). It does not instruct the model to ignore its guidelines. If a model declines, the refusal is recorded

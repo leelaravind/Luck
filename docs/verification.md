@@ -259,6 +259,18 @@ A fourth reviewer refuted the fourth round's bound with a call-by-call simulatio
   (documented in [providers-cli-laya.md](providers-cli-laya.md#maintained-conversation-and-connection-check-added-after-live-testing)):
   a model switch between turns with no model or an alias configured, and the CLI's automatic compaction.
 
+## Sixth fix round — third adversarial review of the CLI bound
+
+A fifth reviewer read the installed Claude Code 2.1.280 and found that `--max-turns 2` allows a second turn (the
+CLI makes the model call its StructuredOutput tool again) and that the output-cap continuation counter restarts in
+each turn, plus one nudge per turn after an answer that only thinks: one decision can make up to 10 API calls, not 4
+(up to about 2× the previous bound at a 4 000-token cap). Thinking cannot be switched off on Claude Fable 5.1 and
+Opus 5.5, which makes capped answers likely there. The bound now covers a run of 10 calls; whether the context is
+surely cacheable is decided without the margins for failed attempts (the property test caught a case where those
+margins switched a small, uncached context to cache-read prices); and the context is the largest one any turn
+reported, so it no longer depends on the order of the records. The CLI's retry after a malformed tool call is a
+further documented limit. A smaller alternative, `--max-turns 1`, needs a live check first and was not made.
+
 ## Outstanding
 
 - **Old commits are still viewable by SHA on GitHub.** The history was rewritten and the CI runs of the 5 commits

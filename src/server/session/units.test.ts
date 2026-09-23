@@ -322,17 +322,18 @@ describe('budget pre-check', () => {
 
   it('Claude Code CLI, first turn: prompt + what the CLI adds as a cold 4-call turn at the configured model price, else the ceiling price', () => {
     const base = { capabilities: cli, pricing: null, promptChars: 1_000, budgetMicros: 1e9, records: [] };
-    // No model configured: $15/MTok ceiling; 500 + 3 000 tokens, below the cacheable size so re-sent at the input price.
-    expect(checkBudget({ ...base, maxOutputTokens: 400 }).worstCaseMicros).toBe(463_500);
-    expect(checkBudget({ ...base, maxOutputTokens: 1_000 }).worstCaseMicros).toBe(724_500);
+    // No model configured: $15/MTok ceiling; 500 + 3 000 tokens, below the cacheable size so re-sent at the input
+    // price; a run of up to 10 calls (2 turns × (1 + 3 continuations + 1 nudge)), each answering with the full cap.
+    expect(checkBudget({ ...base, maxOutputTokens: 400 }).worstCaseMicros).toBe(1_363_500);
+    expect(checkBudget({ ...base, maxOutputTokens: 1_000 }).worstCaseMicros).toBe(2_299_500);
     // A configured model with a built-in price (Claude Opus 5.5: $4 input, $8 1-hour write, $20 output).
-    expect(checkBudget({ ...base, model: 'claude-opus-5-5', maxOutputTokens: 1_000 }).worstCaseMicros).toBe(193_200);
+    expect(checkBudget({ ...base, model: 'claude-opus-5-5', maxOutputTokens: 1_000 }).worstCaseMicros).toBe(613_200);
     // A pricing assumption can only raise the bound (here it is lower than the ceiling).
     const cheap = { inputPerMTokUsd: 1, outputPerMTokUsd: 5, source: 'user' as const };
-    expect(checkBudget({ ...base, pricing: cheap, maxOutputTokens: 400 }).worstCaseMicros).toBe(463_500);
+    expect(checkBudget({ ...base, pricing: cheap, maxOutputTokens: 400 }).worstCaseMicros).toBe(1_363_500);
     // Failed attempts that left no token counts (the CLI discarded that conversation): still a full first
     // turn, plus what each such attempt may have added — never just the $0.05 floor.
-    expect(checkBudget({ ...base, maxOutputTokens: 400, records: [cliFailed()] }).worstCaseMicros).toBe(681_000);
+    expect(checkBudget({ ...base, maxOutputTokens: 400, records: [cliFailed()] }).worstCaseMicros).toBe(2_436_000);
   });
 
   it('Claude Code CLI without reported tokens: the total so far or 2 × the last turn when that is larger', () => {
@@ -365,51 +366,54 @@ describe('budget pre-check', () => {
     expect(turn.costMicros).toBe(9_600);
     const records = Array.from({ length: 40 }, () => turn);
     const base = { capabilities: cli, pricing: null, model: 'sonnet', promptChars: 1_000, maxOutputTokens: 400, records };
-    expect(checkBudget({ ...base, budgetMicros: 600_000 })).toMatchObject({ allowed: true, spentMicros: 384_000, worstCaseMicros: 173_081 });
-    expect(checkBudget({ ...base, budgetMicros: 557_080 }).allowed).toBe(false);
-    expect(checkBudget({ ...base, budgetMicros: 557_081 }).allowed).toBe(true);
+    expect(checkBudget({ ...base, budgetMicros: 700_000 })).toMatchObject({ allowed: true, spentMicros: 384_000, worstCaseMicros: 238_563 });
+    expect(checkBudget({ ...base, budgetMicros: 622_562 }).allowed).toBe(false);
+    expect(checkBudget({ ...base, budgetMicros: 622_563 }).allowed).toBe(true);
     // Claude Fable 5.1 reads its cache at 0.025×: the price derived from its turn uses that ratio.
     const fable = claudeTurn('claude-fable-5-1', 1, 0.025, 2, WARM);
-    expect(checkBudget({ ...base, model: null, records: [fable], budgetMicros: 1e9 }).worstCaseMicros).toBe(194_115);
+    expect(checkBudget({ ...base, model: null, records: [fable], budgetMicros: 1e9 }).worstCaseMicros).toBe(267_555);
     // A lower pricing assumption does not lower it.
     const cheap = { inputPerMTokUsd: 0.1, outputPerMTokUsd: 0.5, source: 'user' as const };
-    expect(checkBudget({ ...base, model: null, pricing: cheap, records: [fable], budgetMicros: 1e9 }).worstCaseMicros).toBe(194_115);
+    expect(checkBudget({ ...base, model: null, pricing: cheap, records: [fable], budgetMicros: 1e9 }).worstCaseMicros).toBe(267_555);
   });
 
   it('Claude Code CLI: what the last turn cannot vouch for is not used (other model, unreported or empty counts, zero cost)', () => {
     const base = { capabilities: cli, pricing: null, promptChars: 1_000, maxOutputTokens: 400, budgetMicros: 1e9 };
     const turn = claudeTurn('claude-sonnet-5', 1, 0.1, 2, WARM);
     // Configured "haiku" but the turn was Sonnet: its price says nothing about the next turn → ceiling price.
-    expect(checkBudget({ ...base, model: 'haiku', records: [turn] }).worstCaseMicros).toBe(2_312_250);
-    expect(checkBudget({ ...base, model: 'sonnet', records: [turn] }).worstCaseMicros).toBe(173_081);
+    expect(checkBudget({ ...base, model: 'haiku', records: [turn] }).worstCaseMicros).toBe(3_187_050);
+    expect(checkBudget({ ...base, model: 'sonnet', records: [turn] }).worstCaseMicros).toBe(238_563);
     // A cache count not reported: that turn gives no context and no price (never counted as 0).
-    expect(checkBudget({ ...base, records: [{ ...turn, cacheReadTokens: null }] }).worstCaseMicros).toBe(681_000);
+    expect(checkBudget({ ...base, records: [{ ...turn, cacheReadTokens: null }] }).worstCaseMicros).toBe(2_436_000);
     // An error result with all counts 0 is not a context either.
     const empty = { ...turn, inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0 };
-    expect(checkBudget({ ...base, records: [empty] }).worstCaseMicros).toBe(681_000);
+    expect(checkBudget({ ...base, records: [empty] }).worstCaseMicros).toBe(2_436_000);
     // Tokens but a cost of 0: no price can be derived → the ceiling price on that context (never 0).
-    expect(checkBudget({ ...base, records: [{ ...turn, costMicros: 0 }] }).worstCaseMicros).toBe(2_312_250);
-    // The context comes from the newest turn with all four counts, even when only an older turn has a cost.
+    expect(checkBudget({ ...base, records: [{ ...turn, costMicros: 0 }] }).worstCaseMicros).toBe(3_187_050);
+    // The context is the largest one a turn with all four counts reported (in any order), even when only another turn has a cost.
     const bigger = usage({ ...turn, costMicros: null, costBasis: 'unknown', cacheReadTokens: 120_000 });
     const withBigger = checkBudget({ ...base, records: [turn, bigger] }).worstCaseMicros!;
     expect(withBigger).toBeGreaterThan(checkBudget({ ...base, records: [turn] }).worstCaseMicros! * 1.8); // context 121 900 vs 61 900
+    expect(checkBudget({ ...base, records: [bigger, turn] }).worstCaseMicros).toBe(withBigger);
     // An attempt after the newest counted turn adds what it may have added to the conversation.
     expect(checkBudget({ ...base, records: [turn, cliFailed()] }).worstCaseMicros!).toBeGreaterThan(checkBudget({ ...base, records: [turn] }).worstCaseMicros!);
   });
 
   /**
-   * What a turn with an expired cache really costs, call by call (independent of budget.ts): the first call
-   * writes the context (billed as plain input when it is below the 4 096-token cacheable size); each of up to 3
-   * continuations re-reads the context and the earlier answers (cache-read rate, or plain input when not
-   * cached) and writes the previous answer plus ~100 tokens of continuation message; every call answers with
-   * the full output cap.
+   * What a CLI run with an expired cache really costs, call by call (independent of budget.ts). Claude Code
+   * 2.1.280 with --max-turns 2: 2 turns, each of 1 call + up to 3 continuations after the output cap + 1 nudge
+   * after an answer that only thinks = 10 calls. The first call writes the context (billed as plain input when it
+   * is below the 4 096-token cacheable size); each later call re-reads the context and the earlier answers
+   * (cache-read rate, or plain input when not cached) and writes the previous answer plus ~100 tokens of message;
+   * every call answers with the full output cap.
    */
   function realColdTurn(p: number, read: number, write: number, context: number, maxOut: number): number {
+    const calls = 2 * (1 + 3 + 1);
     const cached = context >= 4_096;
     const w = cached ? write : 1;
     const r = cached ? read : 1;
     let cost = p * (w * context + 5 * maxOut);
-    for (let call = 2; call <= 4; call++) {
+    for (let call = 2; call <= calls; call++) {
       cost += p * (r * (context + (call - 2) * (maxOut + 100)) + w * (maxOut + 100) + 5 * maxOut);
     }
     return cost;

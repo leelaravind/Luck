@@ -2,7 +2,7 @@
  * Conservative, pre-request budget enforcement for PAID providers.
  *
  * Before EVERY attempt the runner asks: could this call push spending past the app budget?
- *   worst case = worstCaseCostMicros(ceil(promptChars / 3), maxOutputTokens, pricing)
+ *   worst case = worstCaseCostMicros(ceil(promptChars / 2), maxOutputTokens, pricing)
  *   (Claude Code CLI: max(that estimate if a pricing assumption exists, the cost of the resumed
  *    conversation's next turn with an expired prompt cache, 50_000 µ$) — see cliWorstCase)
  *   spent      = sum of known attempt costs
@@ -34,12 +34,14 @@ export function estimateInputTokens(promptChars: number): number {
 }
 
 /**
- * A Claude Code CLI turn can make up to CLI_MAX_CALLS API calls: when the output cap is hit the CLI
- * continues up to 3 more times (observed, see docs/providers-cli-laya.md). Each continuation re-sends
- * the context and the answers so far and adds the previous answer plus a short continuation message
- * (at most CLI_CONTINUATION_TOKENS) as new input.
+ * One Claude Code CLI run (one Luck decision) can make up to CLI_MAX_CALLS API calls: `--max-turns 2`
+ * allows two turns (the second when the CLI makes the model call its StructuredOutput tool again), and
+ * in each turn the CLI continues up to 3 times after the output cap is hit and nudges once after an
+ * answer that only thinks (Claude Code 2.1.280; see docs/providers-cli-laya.md) — 2 × (1 + 3 + 1).
+ * Each later call re-sends the context and the answers so far and adds the previous answer plus a short
+ * message (at most CLI_CONTINUATION_TOKENS) as new input.
  */
-const CLI_MAX_CALLS = 4;
+const CLI_MAX_CALLS = 10;
 const CLI_CONTINUATION_TOKENS = 200;
 /**
  * Context the CLI adds to the first turn besides Luck's prompt: its environment, date, model and
@@ -49,10 +51,11 @@ const CLI_CONTINUATION_TOKENS = 200;
 const CLI_ADDED_TOKENS = 3_000;
 /**
  * Below the minimum cacheable prompt (4 096 tokens for some Claude models) nothing is cached, so a
- * continuation re-sends the context at the full input price. Contexts below twice that (the estimate
- * may be up to 2× the real count) are priced that way.
+ * later call re-sends the context at the full input price. The context estimate can be up to about
+ * 2.5× the real count (1 token per 2 characters and 3 000 added tokens against ~4 and ~1 200), so
+ * estimates below 3 × 4 096 are priced that way.
  */
-const UNCACHED_CONTEXT_TOKENS = 2 * 4_096;
+const UNCACHED_CONTEXT_TOKENS = 3 * 4_096;
 
 /**
  * Cache-read price as a fraction of base input for the Claude models whose rate the bundled Claude API
@@ -165,14 +168,14 @@ function highestBasePrice(r: UsageRecord): number | null {
 }
 
 /**
- * A turn whose prompt cache has expired, call by call: the first call writes the whole context and
- * answers with the full output cap; each continuation re-reads the context and the earlier answers
- * (at the full input price for a context too small to be cached), writes the previous answer plus the
- * continuation message as new input, and answers with the full cap again.
+ * A run whose prompt cache has expired, call by call: the first call writes the whole context and
+ * answers with the full output cap; each later call re-reads the context and the earlier answers (at
+ * the full input price unless the context is surely large enough to be cached), writes the previous
+ * answer plus a short message as new input, and answers with the full cap again.
  */
-function coldTurnMicros(p: TurnPrices, contextTokens: number, maxOutputTokens: number): number {
+function coldTurnMicros(p: TurnPrices, contextTokens: number, maxOutputTokens: number, cacheable: boolean): number {
   const out = Math.max(0, maxOutputTokens);
-  const reread = contextTokens < UNCACHED_CONTEXT_TOKENS ? p.input : p.read;
+  const reread = cacheable ? p.read : p.input;
   let cost = p.write * contextTokens + p.output * out;
   for (let call = 2; call <= CLI_MAX_CALLS; call++) {
     const earlierAnswers = (call - 2) * (out + CLI_CONTINUATION_TOKENS);
@@ -191,17 +194,19 @@ function coldTurnMicros(p: TurnPrices, contextTokens: number, maxOutputTokens: n
  * Prices of the next turn, rate by rate the dearest of: the pricing assumption; the highest base price
  * the last priced turn's cost allows (highestBasePrice), when it was made with the configured model;
  * the configured model's built-in price. When neither of the last two is available, the ceiling price
- * is added. Context: the newest turn with its four token counts reported plus the new prompt, or — with
+ * is added. Context: the largest context a turn reported with its four token counts (the conversation
+ * only grows; the largest does not depend on the order of the records) plus the new prompt, or — with
  * no such turn (the first turn, or only failed attempts whose conversation the CLI discarded) — the new
- * prompt plus what the CLI adds; either way plus, for every later attempt without token counts, what
- * that attempt may have added (a prompt and 4 answers). Priced as a cold turn (coldTurnMicros). When the
+ * prompt plus what the CLI adds; either way plus, for every attempt without token counts after the last
+ * counted one, what that attempt may have added (a prompt and its answers). Priced as a cold run
+ * (coldTurnMicros). When the
  * last priced turn reported no tokens, the older rule max(2 × the last turn, the total so far) can only
  * raise it. The result is at least the pricing estimate and the 50 000 µ$ floor.
  *
  * Limits (documented): with no model configured, or an alias, the CLI may switch to a dearer model
- * between two turns (e.g. after a CLI update), and the CLI's automatic compaction of a very long
- * conversation is an extra call not modelled here. The CLI's own --max-budget-usd stop (the remaining
- * budget) still ends such a turn after the API call in progress.
+ * between two turns (e.g. after a CLI update); the CLI's automatic compaction of a very long
+ * conversation and its retry after a malformed tool call are extra calls not modelled here. The CLI's
+ * own --max-budget-usd stop (the remaining budget) still ends such a run after the API call in progress.
  */
 function cliWorstCase(input: {
   pricing: Pricing | null;
@@ -213,9 +218,14 @@ function cliWorstCase(input: {
 }): UsdMicros {
   let lastPriced: UsageRecord | null = null;
   let lastWithTokens = -1;
+  let largestContext: number | null = null;
   let total = 0;
   input.records.forEach((r, i) => {
-    if (tokensOf(r)) lastWithTokens = i;
+    const t = tokensOf(r);
+    if (t) {
+      lastWithTokens = i;
+      largestContext = Math.max(largestContext ?? 0, t.input + t.read + t.write + t.output);
+    }
     if (r.costBasis === 'provider-reported' && r.costMicros !== null && Number.isFinite(r.costMicros)) {
       lastPriced = r;
       total += r.costMicros;
@@ -234,14 +244,13 @@ function cliWorstCase(input: {
 
   const out = Math.max(0, input.maxOutputTokens);
   const newTokens = estimateInputTokens(input.promptChars);
-  const last = lastWithTokens >= 0 ? tokensOf(input.records[lastWithTokens]!)! : null;
   const laterAttempts = input.records.length - 1 - lastWithTokens;
-  const context =
-    (last ? last.input + last.read + last.write + last.output : CLI_ADDED_TOKENS) +
-    newTokens +
-    laterAttempts * (newTokens + CLI_MAX_CALLS * (out + CLI_CONTINUATION_TOKENS));
+  // Whether the context is surely cacheable is decided without the margins for later attempts: an attempt
+  // that failed may have added nothing (the CLI discards a conversation whose first turn failed).
+  const known = ((largestContext as number | null) ?? CLI_ADDED_TOKENS) + newTokens;
+  const context = known + laterAttempts * (newTokens + CLI_MAX_CALLS * (out + CLI_CONTINUATION_TOKENS));
 
-  let conversation = coldTurnMicros(prices, context, out);
+  let conversation = coldTurnMicros(prices, context, out, known >= UNCACHED_CONTEXT_TOKENS);
   if (priced && !tokensOf(priced)) conversation = Math.max(conversation, 2 * (priced.costMicros ?? 0), total);
   return Math.ceil(Math.max(input.pricingEstimate ?? 0, conversation, CLI_MIN_WORST_CASE_MICROS));
 }
