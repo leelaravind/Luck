@@ -287,42 +287,73 @@ describe('E2E manual session (FIXTURE outcome sequence)', () => {
   });
 
   describe('rejected bets → 422 ApiErrorBody, balance and history unchanged', () => {
-    const cases: { name: string; bets: unknown; code: string[] }[] = [
+    // limited: run against a session that CONFIGURES the optional table limits (the default has none).
+    const cases: { name: string; bets: unknown; code: string[]; limited?: boolean }[] = [
       { name: 'illegal split 1/5 (diagonal, not adjacent)', bets: [bet('split', 100, { numbers: [1, 5] })], code: ['invalid_bet'] },
       { name: 'illegal split 0/4', bets: [bet('split', 100, { numbers: [0, 4] })], code: ['invalid_bet'] },
       { name: 'corner that is not a square', bets: [bet('corner', 100, { numbers: [1, 2, 3, 4] })], code: ['invalid_bet'] },
       { name: 'fractional subunit stake 10.5', bets: [bet('red', 10.5)], code: ['invalid_bet'] },
       { name: 'stake not a multiple of the 0.10 increment (0.15)', bets: [bet('red', 15)], code: ['invalid_bet'] },
-      { name: 'stake over max per bet', bets: [bet('red', 10_010)], code: ['limit_exceeded'] },
+      { name: 'stake over a configured max per bet', bets: [bet('red', 10_010)], code: ['limit_exceeded'], limited: true },
       {
-        name: 'combined stake over max per round (3 × 100.00 > 200.00)',
+        name: 'combined stake over a configured max per round (3 × 100.00 > 200.00)',
         bets: [bet('red', 10_000), bet('black', 10_000), bet('odd', 10_000)],
         code: ['limit_exceeded'],
+        limited: true,
       },
       {
-        name: 'more bets than maxBetsPerRound (11 > 10)',
+        name: 'more bets than a configured maxBetsPerRound (11 > 10)',
         bets: Array.from({ length: 11 }, (_, n) => bet('straight', 10, { numbers: [n + 1] })),
         code: ['limit_exceeded'],
+        limited: true,
       },
       { name: 'dozen index 4', bets: [bet('dozen', 100, { index: 4 })], code: ['invalid_bet'] },
     ];
 
     for (const c of cases) {
       it(c.name, async () => {
-        const before = await snapshot(h, sessionId);
+        const target = c.limited
+          ? (
+              await createSession(h, {
+                name: 'e2e limited',
+                player: { kind: 'manual' },
+                limits: { maxStakePerBet: 10_000, maxStakePerRound: 20_000, maxBetsPerRound: 10 },
+              })
+            ).session.id
+          : sessionId;
+        const before = await snapshot(h, target);
         const drawsBefore = h.outcomes.calls;
-        const res = await h.api('POST', `/api/sessions/${sessionId}/rounds`, { body: { bets: c.bets } });
+        const res = await h.api('POST', `/api/sessions/${target}/rounds`, { body: { bets: c.bets } });
         expect(res.status, res.text).toBe(422);
         const err = errorBody(res);
         expect(c.code).toContain(err.code);
         expect(err.message.length).toBeGreaterThan(0);
-        const after = await snapshot(h, sessionId);
+        const after = await snapshot(h, target);
         expect(after.session.balance).toBe(before.session.balance);
         expect(after.session.roundsPlayed).toBe(before.session.roundsPlayed);
         expect(after.currentRound?.id).toBe(before.currentRound?.id);
         expect(h.outcomes.calls).toBe(drawsBefore); // no outcome drawn for a rejected slip
       });
     }
+
+    it('default session has no table limits: 3 × 100.00 and 11 bets in one round are accepted (balance only)', async () => {
+      // Own harness + fixture outcomes so the shared session's draw accounting is untouched.
+      const own = await createHarness({ label: 'manual-nolimits', outcomes: [7, 8] });
+      try {
+        const open = await createSession(own, { name: 'e2e no limits', player: { kind: 'manual' } });
+        expect(open.session.limits).toMatchObject({ maxStakePerBet: null, maxStakePerRound: null, maxBetsPerRound: null, maxRounds: null, budgetMicros: null });
+        const big = await own.api('POST', `/api/sessions/${open.session.id}/rounds`, {
+          body: { bets: [bet('red', 10_000), bet('black', 10_000), bet('odd', 10_000)] },
+        });
+        expect(big.status, big.text).toBe(200);
+        const many = await own.api('POST', `/api/sessions/${open.session.id}/rounds`, {
+          body: { bets: Array.from({ length: 11 }, (_, n) => bet('straight', 10, { numbers: [n + 1] })) },
+        });
+        expect(many.status, many.text).toBe(200);
+      } finally {
+        await own.close({ removeDb: true });
+      }
+    });
 
     it('stake over the balance → 422 insufficient_funds (low-balance session)', async () => {
       const poor = await createSession(h, {

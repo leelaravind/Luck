@@ -8,15 +8,18 @@ import type { SessionLimits } from '../../shared/contracts';
 import { parseCredits } from '../../shared/money';
 import { microsToUsdInput, parseUsdToMicros, subunitsToInput } from '../state/format';
 
-export const CREDIT_FIELDS = ['startingBalance', 'minStake', 'stakeIncrement', 'maxStakePerBet', 'maxStakePerRound'] as const;
-export const INT_FIELDS = ['maxBetsPerRound', 'maxOutputTokens', 'maxRetries', 'maxConsecutiveFailures', 'historyWindow'] as const;
-export const OPTIONAL_FIELDS = ['maxRounds', 'maxRuntimeMin', 'budgetUsd'] as const;
+export const CREDIT_FIELDS = ['startingBalance', 'minStake', 'stakeIncrement'] as const;
+/** Credit amounts where blank means "no limit". */
+export const OPTIONAL_CREDIT_FIELDS = ['maxStakePerBet', 'maxStakePerRound'] as const;
+export const INT_FIELDS = ['maxOutputTokens', 'maxRetries', 'maxConsecutiveFailures', 'historyWindow'] as const;
+export const OPTIONAL_FIELDS = ['maxBetsPerRound', 'maxRounds', 'maxRuntimeMin', 'budgetUsd'] as const;
 export const SECONDS_FIELDS = ['decisionTimeoutSec'] as const;
 /** Checkbox fields stored as 'true' / 'false'. */
 export const FLAG_FIELDS = ['allowModelStop'] as const;
 
 export type LimitField =
   | (typeof CREDIT_FIELDS)[number]
+  | (typeof OPTIONAL_CREDIT_FIELDS)[number]
   | (typeof INT_FIELDS)[number]
   | (typeof OPTIONAL_FIELDS)[number]
   | (typeof SECONDS_FIELDS)[number]
@@ -26,7 +29,6 @@ export type LimitsValues = Record<LimitField, string>;
 export type LimitsErrors = Partial<Record<LimitField, string>>;
 
 const MIN_INT: Record<(typeof INT_FIELDS)[number], number> = {
-  maxBetsPerRound: 1,
   maxOutputTokens: 1,
   maxRetries: 0,
   maxConsecutiveFailures: 1,
@@ -42,9 +44,9 @@ export function limitsToValues(l: SessionLimits): LimitsValues {
     startingBalance: subunitsToInput(l.startingBalance),
     minStake: subunitsToInput(l.minStake),
     stakeIncrement: subunitsToInput(l.stakeIncrement),
-    maxStakePerBet: subunitsToInput(l.maxStakePerBet),
-    maxStakePerRound: subunitsToInput(l.maxStakePerRound),
-    maxBetsPerRound: String(l.maxBetsPerRound),
+    maxStakePerBet: l.maxStakePerBet === null ? '' : subunitsToInput(l.maxStakePerBet),
+    maxStakePerRound: l.maxStakePerRound === null ? '' : subunitsToInput(l.maxStakePerRound),
+    maxBetsPerRound: l.maxBetsPerRound === null ? '' : String(l.maxBetsPerRound),
     maxRounds: l.maxRounds === null ? '' : String(l.maxRounds),
     maxRuntimeMin: l.maxRuntimeSec === null ? '' : trimDecimal(l.maxRuntimeSec / 60),
     budgetUsd: l.budgetMicros === null ? '' : microsToUsdInput(l.budgetMicros),
@@ -82,6 +84,20 @@ export function valuesToLimits(v: LimitsValues): { limits: SessionLimits | null;
     else if (n < MIN_INT[f]) errors[f] = `Must be at least ${MIN_INT[f]}.`;
     else ints[f] = n;
   }
+  const optionalCredits: Record<(typeof OPTIONAL_CREDIT_FIELDS)[number], number | null> = { maxStakePerBet: null, maxStakePerRound: null };
+  for (const f of OPTIONAL_CREDIT_FIELDS) {
+    if (!v[f].trim()) continue; // blank = no limit
+    const n = parseCredits(v[f]);
+    if (n === null) errors[f] = 'Enter an amount like 10 or 0.50, or leave blank for no limit.';
+    else if (n <= 0) errors[f] = 'Must be greater than 0, or leave blank for no limit.';
+    else optionalCredits[f] = n;
+  }
+  let maxBetsPerRound: number | null = null;
+  if (v.maxBetsPerRound.trim()) {
+    const n = parseInt10(v.maxBetsPerRound);
+    if (n === null || n < 1) errors.maxBetsPerRound = 'Enter a whole number ≥ 1, or leave blank for no limit.';
+    else maxBetsPerRound = n;
+  }
   let maxRounds: number | null = null;
   if (v.maxRounds.trim()) {
     const n = parseInt10(v.maxRounds);
@@ -112,9 +128,9 @@ export function valuesToLimits(v: LimitsValues): { limits: SessionLimits | null;
       startingBalance: credits.startingBalance!,
       minStake: credits.minStake!,
       stakeIncrement: credits.stakeIncrement!,
-      maxStakePerBet: credits.maxStakePerBet!,
-      maxStakePerRound: credits.maxStakePerRound!,
-      maxBetsPerRound: ints.maxBetsPerRound!,
+      maxStakePerBet: optionalCredits.maxStakePerBet,
+      maxStakePerRound: optionalCredits.maxStakePerRound,
+      maxBetsPerRound,
       maxRounds,
       maxRuntimeSec,
       maxOutputTokens: ints.maxOutputTokens!,

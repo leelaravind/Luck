@@ -1,6 +1,6 @@
 import type { DecisionRecord, LogEntry } from '../../../shared/contracts';
-import { DECISION_STATUS_LABEL } from '../../copy';
-import { betLabel, formatCredits, formatMs, formatTime } from '../../state/format';
+import { COPY, DECISION_STATUS_LABEL } from '../../copy';
+import { betLabel, formatCredits, formatMs, formatTime, splitStatedStrategy } from '../../state/format';
 import { Badge } from '../common/Badge';
 import { EmptyState } from '../common/EmptyState';
 
@@ -60,6 +60,22 @@ export function LogsDecisionsPanel({ logs, decisions, heldBack }: Readonly<LogsD
                     {d.bets.map((b) => `${betLabel(b)} ${typeof b.stake === 'number' ? formatCredits(b.stake) : ''}`).join(' · ')}
                   </p>
                 ) : null}
+                {(() => {
+                  const stated = splitStatedStrategy(d.explanation);
+                  return (
+                    <>
+                      {stated.strategy ? (
+                        <p className="m-0 text-ink" title={COPY.modelStrategyNote}>
+                          <span className="font-mono text-[10px] font-semibold uppercase tracking-wider text-secondary-strong">
+                            Strategy (stated):{' '}
+                          </span>
+                          <span className="font-semibold">{stated.strategy}</span>
+                        </p>
+                      ) : null}
+                      {stated.explanation ? <p className="m-0 break-words text-ink-soft">“{stated.explanation}”</p> : null}
+                    </>
+                  );
+                })()}
                 {d.validationErrors.length ? (
                   <p className="m-0 text-danger-strong">{d.validationErrors.join(' · ')}</p>
                 ) : null}

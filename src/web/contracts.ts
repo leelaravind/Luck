@@ -26,6 +26,11 @@ export interface RouletteWheelProps {
   readonly reducedMotion: boolean;
   /** Called exactly once per roundId when the ball rests in the pocket. Presentation only. */
   readonly onSettled: (roundId: string) => void;
+  /**
+   * Last REVEALED result to show at rest when no spin is being animated (after a reload or a session
+   * switch), so the ball stays in its pocket. Never animates and never calls onSettled.
+   */
+  readonly restingNumber?: number | null;
   readonly className?: string;
 }
 

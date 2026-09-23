@@ -36,7 +36,8 @@ export function demoStake(limits: GameObservation['limits']): number {
   const rounded = Math.max(inc, Math.round(NOMINAL_STAKE / inc) * inc);
   let stake = Math.max(limits.minStake, rounded);
   // Clamp to the tighter of the per-bet / per-round caps, staying on the increment grid.
-  const cap = Math.floor(Math.min(limits.maxStakePerBet, limits.maxStakePerRound) / inc) * inc;
+  const caps = [limits.maxStakePerBet, limits.maxStakePerRound].filter((v): v is number => v !== null);
+  const cap = caps.length ? Math.floor(Math.min(...caps) / inc) * inc : Number.MAX_SAFE_INTEGER;
   if (stake > cap) stake = Math.max(limits.minStake, cap);
   return stake;
 }

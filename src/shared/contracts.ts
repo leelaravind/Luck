@@ -72,10 +72,12 @@ export interface SessionLimits {
   startingBalance: Subunits;
   minStake: Subunits;
   stakeIncrement: Subunits;
-  maxStakePerBet: Subunits;
-  /** Combined stake across ALL bets in one round. */
-  maxStakePerRound: Subunits;
-  maxBetsPerRound: number;
+  /** null = no limit per bet (default). */
+  maxStakePerBet: Subunits | null;
+  /** Combined stake across ALL bets in one round; null = no limit (default). The balance always caps it. */
+  maxStakePerRound: Subunits | null;
+  /** null = no limit on the number of bets per round (default). */
+  maxBetsPerRound: number | null;
   /** null = unlimited. */
   maxRounds: number | null;
   /** Wall-clock seconds of autonomous running; null = unlimited. */
@@ -110,13 +112,14 @@ export const DEFAULT_LIMITS: SessionLimits = {
   startingBalance: 1_000_00,
   minStake: 10,
   stakeIncrement: 10,
-  maxStakePerBet: 100_00,
-  maxStakePerRound: 200_00,
-  maxBetsPerRound: 10,
+  // No game limits by default: only the balance and the minimum chip constrain a bet slip.
+  maxStakePerBet: null,
+  maxStakePerRound: null,
+  maxBetsPerRound: null,
   // No stopping limits by default: sessions run until the balance is exhausted or the user stops.
   maxRounds: null,
   maxRuntimeSec: null,
-  maxOutputTokens: 400,
+  maxOutputTokens: 1000,
   budgetMicros: null, // no app spending limit unless the user sets one
   decisionTimeoutMs: 60_000,
   maxRetries: 2,
@@ -226,9 +229,10 @@ export interface GameObservation {
   limits: {
     minStake: Subunits;
     stakeIncrement: Subunits;
-    maxStakePerBet: Subunits;
-    maxStakePerRound: Subunits;
-    maxBetsPerRound: number;
+    /** null = no limit (only the balance caps stakes). */
+    maxStakePerBet: Subunits | null;
+    maxStakePerRound: Subunits | null;
+    maxBetsPerRound: number | null;
     roundsRemaining: number | null;
   };
   betTypes: { type: BetType; payout: number; selection: string }[];

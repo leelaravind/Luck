@@ -173,6 +173,29 @@ export class WheelAnimator {
     this.armWatchdog(entry);
   }
 
+  /**
+   * Show an ALREADY revealed result at rest (e.g. after a reload or when switching sessions): the ball
+   * sits in that pocket immediately, attached to the rotor. No animation, and onSettled is NOT called
+   * (it was reported when the round was first revealed). Ignored while a live spin is running.
+   */
+  rest(winningNumber: number): void {
+    if (this.destroyed || !isRouletteNumber(winningNumber)) return;
+    const a = this.active;
+    if (a && !a.settled) return;
+    if (a && a.plan.winningNumber === winningNumber) return;
+    const now = this.env.now();
+    const plan = planSpin(nextSpinStart(this.frame(now)), winningNumber, {
+      durationMs: 0,
+      idleDegPerSec: this.reduced ? 0 : IDLE_DEG_PER_SEC,
+    });
+    this.active = { roundId: `rest:${winningNumber}`, plan, startedAt: now, settled: true };
+    this.lastSpinInvalid = false;
+    this.setHighlight(plan.targetRelAngle);
+    this.render(now);
+    this.callbacks.onStatus({ kind: 'settled', number: this.renderedLandedNumber() });
+    this.ensureLoop();
+  }
+
   setReducedMotion(reduced: boolean): void {
     if (this.destroyed || reduced === this.reduced) return;
     const now = this.env.now();

@@ -78,9 +78,9 @@ const LimitsShape = {
   startingBalance: posInt(1_000_000_000_00),
   minStake: posInt(1_000_000_00),
   stakeIncrement: posInt(1_000_000_00),
-  maxStakePerBet: posInt(1_000_000_000_00),
-  maxStakePerRound: posInt(1_000_000_000_00),
-  maxBetsPerRound: posInt(100),
+  maxStakePerBet: posInt(1_000_000_000_00).nullable(),
+  maxStakePerRound: posInt(1_000_000_000_00).nullable(),
+  maxBetsPerRound: posInt(1_000).nullable(),
   maxRounds: posInt(1_000_000).nullable(),
   maxRuntimeSec: posInt(7 * 24 * 3600).nullable(),
   maxOutputTokens: posInt(64_000),
@@ -138,10 +138,10 @@ export function validateLimits(value: unknown): SessionLimits {
   const problems: string[] = [];
   const inc = l.stakeIncrement;
   if (l.minStake % inc !== 0) problems.push(`minStake (${l.minStake}) must be a multiple of stakeIncrement (${inc})`);
-  if (l.maxStakePerBet % inc !== 0) problems.push(`maxStakePerBet (${l.maxStakePerBet}) must be a multiple of stakeIncrement (${inc})`);
-  if (l.maxStakePerRound % inc !== 0) problems.push(`maxStakePerRound (${l.maxStakePerRound}) must be a multiple of stakeIncrement (${inc})`);
-  if (l.maxStakePerBet < l.minStake) problems.push(`maxStakePerBet (${l.maxStakePerBet}) must be >= minStake (${l.minStake})`);
-  if (l.maxStakePerRound < l.minStake) problems.push(`maxStakePerRound (${l.maxStakePerRound}) must be >= minStake (${l.minStake})`);
+  if (l.maxStakePerBet !== null && l.maxStakePerBet % inc !== 0) problems.push(`maxStakePerBet (${l.maxStakePerBet}) must be a multiple of stakeIncrement (${inc})`);
+  if (l.maxStakePerRound !== null && l.maxStakePerRound % inc !== 0) problems.push(`maxStakePerRound (${l.maxStakePerRound}) must be a multiple of stakeIncrement (${inc})`);
+  if (l.maxStakePerBet !== null && l.maxStakePerBet < l.minStake) problems.push(`maxStakePerBet (${l.maxStakePerBet}) must be >= minStake (${l.minStake})`);
+  if (l.maxStakePerRound !== null && l.maxStakePerRound < l.minStake) problems.push(`maxStakePerRound (${l.maxStakePerRound}) must be >= minStake (${l.minStake})`);
   if (l.startingBalance < l.minStake) problems.push(`startingBalance (${l.startingBalance}) must be >= minStake (${l.minStake})`);
   if (problems.length) {
     throw new GameError('validation_error', `Inconsistent limits: ${problems.join('; ')}`, { problems });

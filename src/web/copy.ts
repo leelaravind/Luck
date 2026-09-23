@@ -147,9 +147,9 @@ export const LIMIT_FIELD_COPY = {
   startingBalance: { label: 'Starting balance', hint: 'Virtual credits' },
   minStake: { label: 'Minimum stake', hint: 'Per bet' },
   stakeIncrement: { label: 'Stake increment', hint: 'Stakes must be a multiple of this' },
-  maxStakePerBet: { label: 'Max stake per bet', hint: 'Per position' },
-  maxStakePerRound: { label: 'Max stake per round', hint: 'All bets combined' },
-  maxBetsPerRound: { label: 'Max bets per round', hint: 'Positions' },
+  maxStakePerBet: { label: 'Max stake per bet', hint: 'Per position · blank = no limit' },
+  maxStakePerRound: { label: 'Max stake per round', hint: 'All bets combined · blank = no limit (balance only)' },
+  maxBetsPerRound: { label: 'Max bets per round', hint: 'Positions · blank = no limit' },
   maxRounds: { label: 'Max rounds', hint: 'Blank = unlimited' },
   maxRuntimeMin: { label: 'Max autonomous runtime', hint: 'Minutes · blank = unlimited' },
   budgetUsd: {

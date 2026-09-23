@@ -18,7 +18,7 @@ export function chipValuesFor(
   const { minStake, stakeIncrement, maxStakePerBet } = limits;
   if (!Number.isSafeInteger(stakeIncrement) || stakeIncrement <= 0) return [];
   return denominations.filter(
-    (v) => Number.isSafeInteger(v) && v >= minStake && v % stakeIncrement === 0 && v <= maxStakePerBet,
+    (v) => Number.isSafeInteger(v) && v >= minStake && v % stakeIncrement === 0 && (maxStakePerBet === null || v <= maxStakePerBet),
   );
 }
 

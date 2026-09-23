@@ -118,7 +118,7 @@ export function buildLayaState(obs: GameObservation): string {
   return [
     `Virtual European single-zero roulette, round ${obs.roundNumber}. Amounts are ${obs.units}.`,
     `Balance: ${obs.balance}. Session net result: ${fmtSigned(obs.stats.netResult)} after ${obs.stats.roundsPlayed} rounds.`,
-    `Minimum stake ${l.minStake}; maximum per bet ${l.maxStakePerBet}; maximum per round ${l.maxStakePerRound}.`,
+    `Minimum stake ${l.minStake}; maximum per bet ${l.maxStakePerBet ?? 'no limit'}; maximum per round ${l.maxStakePerRound ?? 'no limit (balance only)'}.`,
     `Rounds remaining: ${l.roundsRemaining === null ? 'no limit' : l.roundsRemaining}.`,
     `Last results (oldest first): ${results}.`,
     lastLine,

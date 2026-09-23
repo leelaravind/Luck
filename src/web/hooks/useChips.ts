@@ -10,7 +10,11 @@ export const STANDARD_CHIPS: readonly Subunits[] = [10, 50, 100, 500, 2_500, 10_
 
 export function chipValuesFor(limits: SessionLimits): Subunits[] {
   const allowed = STANDARD_CHIPS.filter(
-    (v) => v >= limits.minStake && v <= limits.maxStakePerBet && limits.stakeIncrement > 0 && v % limits.stakeIncrement === 0,
+    (v) =>
+      v >= limits.minStake &&
+      (limits.maxStakePerBet === null || v <= limits.maxStakePerBet) &&
+      limits.stakeIncrement > 0 &&
+      v % limits.stakeIncrement === 0,
   );
   if (allowed.length) return allowed;
   // Fall back to the smallest legal stake.

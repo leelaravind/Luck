@@ -289,18 +289,20 @@ function assertLimits(balance: Subunits, limits: SessionLimits): void {
     Number.isSafeInteger(balance) &&
     positiveInt(limits.minStake) &&
     positiveInt(limits.stakeIncrement) &&
-    positiveInt(limits.maxStakePerBet) &&
-    positiveInt(limits.maxStakePerRound) &&
-    positiveInt(limits.maxBetsPerRound);
+    // null = no limit for these three (the default); the balance is always the hard ceiling.
+    (limits.maxStakePerBet === null || positiveInt(limits.maxStakePerBet)) &&
+    (limits.maxStakePerRound === null || positiveInt(limits.maxStakePerRound)) &&
+    (limits.maxBetsPerRound === null || positiveInt(limits.maxBetsPerRound));
   if (!ok) throw new GameError('internal', 'Bet validation called with an invalid balance or session limits');
 }
 
 /**
  * Validate a whole bet slip against the rules AND limits, backend-authoritative.
- * - rejects non-array / empty / > maxBetsPerRound (validation_error / limit_exceeded)
+ * - rejects non-array / empty / > maxBetsPerRound when set (validation_error / limit_exceeded)
  * - every stake: safe integer, >= minStake, multiple of stakeIncrement, <= maxStakePerBet (invalid_bet / limit_exceeded)
  * - identical positions are merged by key (stakes summed) and re-checked against maxStakePerBet
- * - COMBINED stake <= maxStakePerRound (limit_exceeded) and <= balance (insufficient_funds)
+ * - COMBINED stake <= maxStakePerRound when set (limit_exceeded) and ALWAYS <= balance (insufficient_funds)
+ * - a null maxStakePerBet / maxStakePerRound / maxBetsPerRound means "no limit"
  * Never "repairs" a bet into a different one.
  *
  * Notes: maxBetsPerRound is checked against the number of SUBMITTED entries (before merging).
@@ -313,7 +315,7 @@ export function validateBetSlip(bets: unknown, ctx: { balance: Subunits; limits:
 
   if (!Array.isArray(bets)) throw new GameError('validation_error', `Bets must be an array, got ${show(bets)}`);
   if (bets.length === 0) throw new GameError('validation_error', 'Bet slip is empty: place at least one bet');
-  if (bets.length > limits.maxBetsPerRound) {
+  if (limits.maxBetsPerRound !== null && bets.length > limits.maxBetsPerRound) {
     throw new GameError(
       'limit_exceeded',
       `Too many bets: ${bets.length} submitted, the limit is ${limits.maxBetsPerRound} per round`,
@@ -341,7 +343,7 @@ export function validateBetSlip(bets: unknown, ctx: { balance: Subunits; limits:
     if (bet.stake % limits.stakeIncrement !== 0) {
       throw new GameError('invalid_bet', `${what}: stake ${amount(bet.stake)} is not a multiple of the stake increment ${amount(limits.stakeIncrement)}`, { betIndex: i });
     }
-    if (bet.stake > limits.maxStakePerBet) {
+    if (limits.maxStakePerBet !== null && bet.stake > limits.maxStakePerBet) {
       throw new GameError('limit_exceeded', `${what}: stake ${amount(bet.stake)} exceeds the maximum stake per bet of ${amount(limits.maxStakePerBet)}`, { betIndex: i, limit: limits.maxStakePerBet, actual: bet.stake });
     }
     const existing = merged.get(bet.key);
@@ -350,18 +352,18 @@ export function validateBetSlip(bets: unknown, ctx: { balance: Subunits; limits:
       return;
     }
     const combined = existing.stake + bet.stake;
-    if (combined > limits.maxStakePerBet) {
+    if (limits.maxStakePerBet !== null && combined > limits.maxStakePerBet) {
       throw new GameError('limit_exceeded', `${what}: combined stake on ${bet.label} would be ${amount(combined)}, above the maximum stake per bet of ${amount(limits.maxStakePerBet)}`, { betIndex: i, limit: limits.maxStakePerBet, actual: combined });
     }
     existing.stake = combined;
   });
 
   const result = [...merged.values()];
-  // Every stake is <= maxStakePerBet (a safe integer) and there are at most maxBetsPerRound of them,
-  // so this sum stays far inside the safe-integer range for any sane limits; checked anyway.
+  // Stakes are safe integers and the request body size bounds how many there can be; the sum is
+  // still checked because the per-bet / per-round limits may be off.
   const total = result.reduce((sum, b) => sum + b.stake, 0);
   if (!Number.isSafeInteger(total)) throw new GameError('limit_exceeded', 'Combined stake is too large');
-  if (total > limits.maxStakePerRound) {
+  if (limits.maxStakePerRound !== null && total > limits.maxStakePerRound) {
     throw new GameError('limit_exceeded', `Combined stake ${amount(total)} exceeds the maximum stake per round of ${amount(limits.maxStakePerRound)}`, { limit: limits.maxStakePerRound, actual: total });
   }
   if (total > balance) {

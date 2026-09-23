@@ -33,7 +33,7 @@ export function wheelAriaLabel(status: WheelStatus): string {
   }
 }
 
-export function RouletteWheel({ spin, speed, reducedMotion, onSettled, className }: RouletteWheelProps) {
+export function RouletteWheel({ spin, speed, reducedMotion, onSettled, restingNumber = null, className }: RouletteWheelProps) {
   // useId() may contain characters that are awkward inside url(#…); keep it to [A-Za-z0-9_-].
   const uid = `luck-wheel-${useId().replace(/[^A-Za-z0-9_-]/g, '')}`;
   const rootRef = useRef<SVGSVGElement>(null);
@@ -92,6 +92,12 @@ export function RouletteWheel({ spin, speed, reducedMotion, onSettled, className
     if (roundId === null || winningNumber === null) return;
     animatorRef.current?.spin(roundId, winningNumber, speedRef.current);
   }, [roundId, winningNumber]);
+
+  // No live spin: keep the last revealed result resting in its pocket (no animation, no onSettled).
+  useEffect(() => {
+    if (roundId !== null || restingNumber === null) return;
+    animatorRef.current?.rest(restingNumber);
+  }, [roundId, restingNumber]);
 
   return (
     <svg

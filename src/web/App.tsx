@@ -130,6 +130,7 @@ export function App({ api }: Readonly<AppProps>) {
                   speed={store.speed}
                   reducedMotion={store.reducedMotion}
                   onSettled={actions.onWheelSettled}
+                  restingNumber={p.lastRound?.winningNumber ?? null}
                   className="drop-shadow-2xl"
                 />
               }

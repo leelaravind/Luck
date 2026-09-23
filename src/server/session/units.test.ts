@@ -195,7 +195,14 @@ describe('prompts', () => {
     expect(withStop).toContain('{"action":"stop"');
     expect(withStop).not.toMatch(/You cannot end the session/);
     expect(sys).toContain('straight 35:1');
-    expect(sys).toContain(`<= ${DEFAULT_LIMITS.maxStakePerRound}`);
+    // Default: no table limits — only the balance caps the combined stake.
+    expect(sys).toMatch(/combined stake of all bets in a round can be anything up to your current balance/);
+    expect(sys).toMatch(/no limit on the number of bets per round/);
+    expect(sys).toMatch(/OBJECTIVE/);
+    expect(sys).toMatch(/Try to grow your balance/);
+    const limited = buildSystemPrompt(buildObservation(session({ limits: { ...DEFAULT_LIMITS, maxStakePerRound: 20_000, maxBetsPerRound: 10 } }), []));
+    expect(limited).toContain('<= 20000');
+    expect(limited).toContain('at most 10 bets per round');
     expect(sys).toContain(`multiple of ${DEFAULT_LIMITS.stakeIncrement}`);
   });
 

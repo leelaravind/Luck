@@ -365,3 +365,23 @@ describe('RouletteWheel settle bookkeeping', () => {
     expect(err).toHaveBeenCalled();
   });
 });
+
+describe('resting result after reload / session switch', () => {
+  it('shows the last revealed number in its pocket without animating or calling onSettled', async () => {
+    const { render, act } = await import('@testing-library/react');
+    const { RouletteWheel } = await import('./RouletteWheel');
+    const onSettled = vi.fn();
+    for (const n of [0, 17, 34]) {
+      const { container, unmount } = render(
+        <RouletteWheel spin={null} speed="normal" reducedMotion={false} onSettled={onSettled} restingNumber={n} />,
+      );
+      await act(async () => {});
+      const svg = container.querySelector('svg')!;
+      expect(svg.getAttribute('data-spin-state')).toBe('settled');
+      expect(svg.getAttribute('data-landed-number')).toBe(String(n));
+      expect(svg.getAttribute('aria-label')).toContain(`Last result: ${n}`);
+      unmount();
+    }
+    expect(onSettled).not.toHaveBeenCalled();
+  });
+});
