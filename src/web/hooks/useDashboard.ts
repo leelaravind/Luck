@@ -67,7 +67,8 @@ export function useDashboard(api?: ApiClient) {
 
   // Settings freshness: re-read them from the server when the Settings panel is opened, and when the window
   // regains focus while it is open, so the form never shows (and saves over) an old copy after another tab
-  // or an API client changed them. Skipped while the form holds unsaved changes (they would be replaced);
+  // or an API client changed them. Skipped while the form holds unsaved changes (they would be replaced),
+  // checked both when the read starts and when its answer arrives (typing may have begun in between);
   // the save then sends only those changes, so it still cannot overwrite anything else.
   const { refreshSettings } = actions;
   const settingsVisible = drawer.open && drawer.tab === 'settings';
@@ -75,9 +76,10 @@ export function useDashboard(api?: ApiClient) {
   settingsGate.current = { booted: !state.busy.booting, unsaved: settingsForm.unsaved };
   useEffect(() => {
     if (!settingsVisible) return;
+    const noUnsavedChanges = () => !settingsGate.current.unsaved;
     const refresh = () => {
       const g = settingsGate.current;
-      if (g.booted && !g.unsaved) void refreshSettings();
+      if (g.booted && !g.unsaved) void refreshSettings({ applyIf: noUnsavedChanges });
     };
     refresh();
     const onVisible = () => {

@@ -16,8 +16,9 @@
  *
  * Stability on a busy machine (the full suite runs many forks at once): beforeAll WARMS the server — it requests
  * /, /main.tsx, /@vite/client and one src/shared module once, so the tests below hit already-transformed modules
- * instead of cold Vite transforms — every test has an explicit, generous timeout, and each request uses its own
- * connection (no keep-alive socket reuse, which can race with the server closing an idle socket → ECONNRESET).
+ * instead of cold Vite transforms — every test has an explicit, generous timeout, each request uses its own
+ * connection (no keep-alive socket reuse, which can race with the server closing an idle socket → ECONNRESET),
+ * and a request that gets no answer at all within 30 s is sent once more.
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -48,14 +49,31 @@ interface Reply {
 let server: ViteDevServer | undefined;
 let port = 0;
 
-/** Per-request limit; the tests and hooks have larger budgets, so one slow request never exceeds them. */
-const REQUEST_TIMEOUT_MS = 45_000;
+/**
+ * Per-attempt limit. A timed-out request is retried once (see get), so one stalled request plus its retry
+ * (60 s) still fits the 120 s test budget with the test's other requests.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
 /** Budgets for the hooks and the tests (generous: cold Vite transforms during a loaded full-suite run). */
 const HOOK_TIMEOUT_MS = 120_000;
 const HTTP_TEST_TIMEOUT_MS = 120_000;
 const LOCAL_TEST_TIMEOUT_MS = 60_000;
 
-function get(urlPath: string, headers: Record<string, string> = {}, method = 'GET'): Promise<Reply> {
+/**
+ * One request. A request that TIMES OUT (no answer at all, so nothing was disclosed) is sent once more on a
+ * fresh connection: a single stalled request on a heavily loaded machine was seen to fail an otherwise clean
+ * run. Every assertion still runs on a real answer; any other error fails the test at once.
+ */
+async function get(urlPath: string, headers: Record<string, string> = {}, method = 'GET'): Promise<Reply> {
+  try {
+    return await getOnce(urlPath, headers, method);
+  } catch (e) {
+    if (!(e instanceof Error && e.message.startsWith('timeout:'))) throw e;
+    return getOnce(urlPath, headers, method);
+  }
+}
+
+function getOnce(urlPath: string, headers: Record<string, string>, method: string): Promise<Reply> {
   return new Promise((resolve, reject) => {
     // agent: false → a fresh connection per request (no keep-alive reuse of a socket the server may be closing)
     const req = http.request({ host: '127.0.0.1', port, path: urlPath, method, agent: false, headers: { Accept: '*/*', ...headers } }, (res) => {

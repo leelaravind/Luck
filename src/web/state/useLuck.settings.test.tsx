@@ -85,6 +85,23 @@ describe('useLuck.refreshSettings', () => {
     expect(result.current.state.settings?.pricing).toHaveProperty(['ollama:other-tab-fixture']);
   });
 
+  it('applyIf is checked when the answer arrives: typing that began during the read is not replaced', async () => {
+    const slowRead = deferred<AppSettings>();
+    const { result } = setup([BASE, slowRead.promise]);
+    await waitFor(() => expect(result.current.state.settings).not.toBeNull());
+    const loaded = result.current.state.settings;
+
+    let unsaved = false;
+    let refresh!: Promise<void>;
+    act(() => {
+      refresh = result.current.actions.refreshSettings({ applyIf: () => !unsaved });
+    });
+    unsaved = true; // the user starts typing before the answer arrives
+    slowRead.resolve({ ...BASE, roundPacingMs: 9000 });
+    await act(() => refresh);
+    expect(result.current.state.settings).toBe(loaded);
+  });
+
   it('is quiet on failure and keeps the current copy', async () => {
     const { result } = setup([BASE, new Error('fixture outage')]);
     await waitFor(() => expect(result.current.state.settings).not.toBeNull());

@@ -32,7 +32,9 @@ $env:npm_config_cache = "$PWD\tmp\npm-cache"
 
 `tmp/` is gitignored. The e2e and security suites write their SQLite files and fixtures to `tmp/10/` (the Vite
 dev-server test to `tmp/vite-dev-<uuid>/`, the startup-message test to `tmp/startup-banner-<uuid>/`) and delete
-them afterwards. They never write outside the repository.
+them afterwards. Tests that delete their whole folder use one of their own per test run (`tmp/static-test-*`,
+`tmp/validator-fixtures-*`, `tmp/claudecli-test-*`), so two runs at the same time never remove each other's files.
+They never write outside the repository.
 
 Tests that need a real socket (SSE, raw `Host` headers, the Vite dev server) listen on an **ephemeral port** (the OS
 picks a free port). They never use 3717 or 5717, so they can run while `npm run dev` is running. The Vite test uses its

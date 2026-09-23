@@ -88,7 +88,7 @@ repository hygiene).
 | A11b-N2 demo player skipped forever when short of its flat stake (no default round limit) | medium | **fixed**: stakes the remaining legal amount; tests updated |
 | A11b-N3 strategy + explanation clipped together | low | **fixed**: separate budgets |
 | A11b-N4 objective text ignored configured limits | low | **fixed**: end conditions built from the session's limits; test added |
-| A11b-N5 CLI worst case ignored the resumed conversation when pricing is set | low | **fixed**: worst case = max(pricing estimate, 2 × last turn's CLI cost, the session's total CLI cost so far, $0.05) — still an upper bound when a resumed turn has to re-read an expired prompt cache |
+| A11b-N5 CLI worst case ignored the resumed conversation when pricing is set | low | **fixed**: worst case = max(pricing estimate, a cold re-write of the conversation bounded from the last turn's cost and tokens, $0.05) — an upper bound when a resumed turn has to re-write an expired prompt cache (property-tested at Claude price ratios in `units.test.ts`). An intermediate version used the session's total CLI cost so far, which stopped a session with an app spending limit at about half of it; that rule is now only the fallback when the CLI reports no tokens |
 | A11b-N6 no repo test for spin priority over the resting ball | low | **fixed**: RouletteWheel.priority.test.tsx |
 
 Independent closure review (A11, second pass): D1, D4, D5, D6, D8, D9 and the no-limit / stop / strategy / CLI
@@ -160,7 +160,10 @@ reported "clean"), and a folder for which git lists no files.
   machine (cold Vite transforms of `/main.tsx` under the default 20 s test timeout; one `ECONNRESET`). Its
   `beforeAll` now warms the server (`/`, `/main.tsx`, `/@vite/client`, a `src/shared` module; 120 s hook budget),
   every test has an explicit timeout (120 s for the HTTP tests), and each request opens its own connection. The
-  assertions are unchanged.
+  assertions are unchanged. The third check still saw one stall (1 of 8 runs of the file: one request got no answer
+  for 45 s while three test runs shared the machine; 6 later runs under a full-suite load and 30 CI jobs passed), so
+  a request that gets no answer within 30 s is now sent once more — timeouts only, and every assertion still runs
+  on a real answer.
 - **Secret scan in a folder inside another repository.** A folder under an enclosing repository's ignored path was
   scanned in git mode, which listed 0 files and printed "clean". The scanner now falls back to walk mode with a
   notice when the folder is ignored by the enclosing repository, has no file tracked there, or git lists no files
@@ -176,6 +179,35 @@ reported "clean"), and a folder for which git lists no files.
 - **Docs.** CLI disclosure completed (`model`, `total_tokens_reminder`, `budget_usd`); the checklist no longer
   calls the output-token cap optional (it is always set: default 1000, editable); the Laya explanation examples
   use the current format; a dangling evidence reference (I3) now points to Live checks.
+
+## Third fix round — findings of the second closure check
+
+Two independent verifiers re-checked every round-two item against the pushed code: all runtime, server and UI
+items closed; the new defects below were fixed.
+
+- **macOS CI (medium).** All 5 macOS jobs of `566620c` failed two sandbox assertions in `claudeCli.test.ts`: the
+  test folder had moved to the OS temp folder, which on macOS is under `/var`, a link to `/private/var`, and the
+  fake CLI reports its working directory with links resolved. The paths are now compared after resolving links
+  (`04c13ac`, CI 17/17 green), and the test folder is back under the repository's `tmp/`.
+- **CLI sessions with an app spending limit stopped at about half of it (medium-low).** The worst case of the next
+  CLI turn was at least the session's total CLI cost so far, so a turn was only sent while spent + spent fit the
+  limit. It is now a cold re-write of the conversation bounded from the last turn's reported cost and tokens (see
+  [providers-cli-laya.md](providers-cli-laya.md#maintained-conversation-and-connection-check-added-after-live-testing));
+  a 40-turn test conversation of 60 000 tokens can now spend about 85 % of its limit instead of 50 %.
+  `units.test.ts` checks the bound against a cold turn's real cost at Claude price ratios (4 prices × both cache
+  lifetimes × 4 token mixes × 3 output caps); the old rule remains only when the CLI reports no tokens.
+- **"Reset to default", then "Add" with the same key, silently cancelled the reset (low).** Adding a key that is
+  already in the table now changes nothing (`useSettingsForm.test.ts`); an App-level test now clicks "Reset to
+  default", saves and checks the row is back at its built-in value.
+- **A runtime limit was not applied during a pacing wait (low).** With a 600 s pacing and a 5 s runtime limit the
+  session ran on until the wait ended. The wait now ends when the runtime limit is reached (`runner.test.ts`).
+- **A settings re-read could replace typing that began while it was in flight (very low).** The "no unsaved
+  changes" check now also runs when the answer arrives (`useLuck.settings.test.tsx`).
+- **Test runs at the same time deleted each other's fixtures (low).** `static.test.ts` and
+  `validate-components.test.ts` used fixed folders and removed them wholesale; each run now has its own folder
+  (two overlapping runs of both files pass). The other tests already used unique files.
+- **Docs.** The CI file and README no longer say Node 26 is outside the test matrix (it is in it); `testing.md`
+  lists the per-run test folders.
 
 ## Outstanding
 

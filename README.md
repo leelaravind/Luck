@@ -43,8 +43,8 @@ See [docs/providers.md](docs/providers.md).
 
 Check your Node.js version with `node --version`. Older releases (22.x before 22.22.2, 24.x before 24.15) and the
 short-lived 23.x and 25.x lines are not supported: the test tools need exactly this range (`package.json` →
-`engines`: `^22.22.2 || ^24.15.0 || >=26.0.0`). The automated tests run on 22.22.2, 24.15.0 and the latest 22 and
-24 releases; 26 or newer is allowed by that range but not part of the automated test matrix.
+`engines`: `^22.22.2 || ^24.15.0 || >=26.0.0`). The automated tests run on 22.22.2, 24.15.0 and the latest 22, 24
+and 26 releases, on Windows, macOS and Linux.
 
 ## 3. Install
 

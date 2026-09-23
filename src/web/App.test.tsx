@@ -90,6 +90,8 @@ interface World {
   settingsGets?: number;
   /** Number of GET /api/sessions requests. */
   sessionListGets?: number;
+  /** Built-in default pricing values: a built-in key in pricingRemove goes back to its value here. */
+  builtInDefaults?: AppSettings['pricing'];
 }
 
 function makeFetch(world: World) {
@@ -109,11 +111,15 @@ function makeFetch(world: World) {
       const body = JSON.parse(String(init?.body)) as AppSettingsPatch;
       world.settingsPuts?.push(body);
       // The AppSettingsPatch contract: pricing entries are MERGED key by key; deletions only through
-      // pricingRemove; built-in keys are never removed; builtInPricingKeys is read-only.
+      // pricingRemove; a built-in key there only goes back to its default ("Reset to default") and is
+      // never removed; builtInPricingKeys is read-only.
       const { pricing, pricingRemove, builtInPricingKeys: _readOnly, ...rest } = body;
       const builtIn = new Set(world.settings.builtInPricingKeys ?? []);
       const nextPricing = { ...world.settings.pricing, ...(pricing ?? {}) };
-      for (const key of pricingRemove ?? []) if (!builtIn.has(key)) delete nextPricing[key];
+      for (const key of pricingRemove ?? []) {
+        if (!builtIn.has(key)) delete nextPricing[key];
+        else if (world.builtInDefaults?.[key]) nextPricing[key] = world.builtInDefaults[key];
+      }
       world.settings = { ...world.settings, ...rest, pricing: nextPricing };
       return json(world.settings);
     }
@@ -708,6 +714,43 @@ describe('App audit fixes (fixture server)', () => {
     expect(screen.queryByText('anthropic:my-model')).toBeNull();
     expect(screen.queryByText('openai:orphan-fixture-default')).toBeNull();
     expect(screen.queryAllByRole('button', { name: /^Remove/ })).toHaveLength(0);
+  });
+
+  it('settings pricing: an overridden built-in row can be reset to its default; the pending reset is shown and sent as pricingRemove', async () => {
+    const builtInDefault = { inputPerMTokUsd: 1, outputPerMTokUsd: 2, source: 'default-assumption' as const, asOf: '2026-01-01' };
+    const world: World = {
+      providers: [],
+      settings: {
+        ...SETTINGS,
+        pricing: { 'openai:default-model': { inputPerMTokUsd: 9, outputPerMTokUsd: 9, source: 'user', asOf: '2026-09-02' } },
+        builtInPricingKeys: ['openai:default-model'],
+      },
+      builtInDefaults: { 'openai:default-model': builtInDefault },
+      sessions: [],
+      snapshot: fixtureSnapshot(fixtureSession(), []),
+      rounds: [],
+      usage: [],
+      settingsPuts: [],
+    };
+    render(<App api={createApiClient({ fetch: makeFetch(world) })} />);
+    await screen.findByText('No sessions yet. Create one with “New session”.');
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    await screen.findByText('openai:default-model', { selector: 'legend' });
+
+    // Overridden built-in row: "Reset to default" (never Remove).
+    expect(screen.queryByRole('button', { name: 'Remove openai:default-model' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset openai:default-model to the built-in default' }));
+    expect(screen.getByText('Resets to the built-in default when you save.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Reset openai:default-model to the built-in default' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(world.settingsPuts).toHaveLength(1));
+    expect(world.settingsPuts![0]).toEqual({ pricingRemove: ['openai:default-model'] });
+    expect(world.settings.pricing['openai:default-model']).toEqual(builtInDefault);
+    // Back to the default: no pending note, and nothing left to reset.
+    await waitFor(() => expect(screen.queryByText('Resets to the built-in default when you save.')).toBeNull());
+    expect(screen.queryByRole('button', { name: 'Reset openai:default-model to the built-in default' })).toBeNull();
+    expect(screen.getByText('openai:default-model', { selector: 'legend' })).toBeTruthy();
   });
 
   it('settings freshness: opening the panel re-reads the settings, and a stale tab cannot overwrite what it did not change', async () => {

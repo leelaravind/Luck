@@ -148,18 +148,16 @@ export function useSettingsForm(settings: AppSettings | null) {
   }, [builtInKeys]);
   const addRow = useCallback(
     (key: string) => {
-      setRows((rs) =>
-        rs.some((r) => r.key === key)
-          ? rs
-          : [
-              ...rs,
-              { key, input: '', output: '', cacheRead: '', cacheWrite: '', source: 'user', asOf: '', builtIn: builtInKeys.includes(key), dirty: true },
-            ],
-      );
+      // A key already in the table is left alone, including a pending "Reset to default" on it.
+      if (rows.some((r) => r.key === key)) return;
+      setRows((rs) => [
+        ...rs,
+        { key, input: '', output: '', cacheRead: '', cacheWrite: '', source: 'user', asOf: '', builtIn: builtInKeys.includes(key), dirty: true },
+      ]);
       // Added again after a removal: it is saved as a new value, not deleted.
       setRemoved((ks) => (ks.includes(key) ? ks.filter((k) => k !== key) : ks));
     },
-    [builtInKeys],
+    [rows, builtInKeys],
   );
   /**
    * A built-in row the user overrode (source 'user') can be reset: the override is dropped on save

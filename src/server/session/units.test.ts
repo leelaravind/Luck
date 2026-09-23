@@ -312,20 +312,23 @@ describe('budget pre-check', () => {
     expect(conservativeSpentMicros(recs, 9_000, 2)).toBe(36_500);
   });
 
-  it('Claude Code CLI without pricing: max(2 × last reported cost, 50 000 µ$)', () => {
+  /** A CLI turn whose cost was reported but whose tokens were not (the fallback rule applies). */
+  const cliCostOnly = (costMicros: number) =>
+    usage({ providerKind: 'claude-cli', costMicros, costBasis: 'provider-reported', known: false, inputTokens: null, outputTokens: null, cacheReadTokens: null, cacheWriteTokens: null });
+
+  it('Claude Code CLI without pricing or reported tokens: max(2 × last reported cost, 50 000 µ$)', () => {
     const cli = { kind: 'claude-cli' as const, reportsCost: true };
     const base = { capabilities: cli, pricing: null, promptChars: 1_000, maxOutputTokens: 400, budgetMicros: 1_000_000 };
     expect(checkBudget({ ...base, records: [] })).toMatchObject({ allowed: true, worstCaseMicros: CLI_MIN_WORST_CASE_MICROS });
-    const recs = [usage({ providerKind: 'claude-cli', costMicros: 40_000, costBasis: 'provider-reported' })];
-    expect(checkBudget({ ...base, records: recs })).toMatchObject({ allowed: true, worstCaseMicros: 80_000 });
+    expect(checkBudget({ ...base, records: [cliCostOnly(40_000)] })).toMatchObject({ allowed: true, worstCaseMicros: 80_000 });
   });
 
-  it('Claude Code CLI: the worst case includes the session total so far (a resumed turn whose prompt cache expired)', () => {
+  it('Claude Code CLI without reported tokens: the worst case includes the session total so far (a resumed turn whose prompt cache expired)', () => {
     const cli = { kind: 'claude-cli' as const, reportsCost: true };
     // Turn 1 wrote a large context to the prompt cache (the expensive part); the warm turns after it
     // were mostly cheap cache reads. Once the cache expires, the next turn writes the whole context
     // again, which costs about as much as turn 1 did — far more than 2 × the last warm turn.
-    const recs = [120_000, 6_000, 6_000].map((c) => usage({ providerKind: 'claude-cli', costMicros: c, costBasis: 'provider-reported' }));
+    const recs = [120_000, 6_000, 6_000].map(cliCostOnly);
     const base = { capabilities: cli, pricing: null, promptChars: 1_000, maxOutputTokens: 400, records: recs };
     // max(2 × 6 000, total 132 000, floor 50 000) = 132 000 (the old bound was only 50 000).
     expect(checkBudget({ ...base, budgetMicros: 1_000_000 })).toMatchObject({ allowed: true, worstCaseMicros: 132_000, spentMicros: 132_000 });
@@ -341,6 +344,62 @@ describe('budget pre-check', () => {
     expect(checkBudget({ ...base, pricing: dear, budgetMicros: 10_000_000 }).worstCaseMicros).toBe(734_000);
     // Other providers are unchanged: the pricing estimate alone.
     expect(checkBudget({ ...base, capabilities: caps, pricing: cheap, budgetMicros: 1_000_000 }).worstCaseMicros).toBe(2_334);
+  });
+
+  // A CLI turn priced like a Claude model: base input p µ$/token, cache read 0.1×, cache write
+  // `write`× (1.25 for the 5-minute cache, 2 for the 1-hour cache), output 5×.
+  const claudeTurn = (p: number, write: number, t: { input: number; read: number; written: number; output: number }) =>
+    usage({
+      providerKind: 'claude-cli',
+      costBasis: 'provider-reported',
+      costMicros: Math.round(p * (t.input + 0.1 * t.read + write * t.written + 5 * t.output)),
+      inputTokens: t.input,
+      cacheReadTokens: t.read,
+      cacheWriteTokens: t.written,
+      outputTokens: t.output,
+    });
+
+  it('Claude Code CLI with reported tokens: bounded by a cold re-write of the conversation, so a long session can use most of its budget', () => {
+    const cli = { kind: 'claude-cli' as const, reportsCost: true };
+    // 40 warm turns of a 60 000-token conversation at $1/MTok input, 1-hour cache: 9 600 µ$ each.
+    const turn = claudeTurn(1, 2, { input: 100, read: 60_000, written: 1_000, output: 300 });
+    expect(turn.costMicros).toBe(9_600);
+    const recs = Array.from({ length: 40 }, () => turn);
+    const base = { capabilities: cli, pricing: null, promptChars: 1_000, maxOutputTokens: 400, records: recs };
+    const check = checkBudget({ ...base, budgetMicros: 600_000 });
+    // max price per token = 9 600 / (100 + 6 000 + 1 250 + 1 200) = 1.1228…; context 61 400 + 334 new;
+    // 1.1228… × (2.5 × 61 734 + 20 × 400) = 182 270.9… µ$ — not the 384 000 µ$ spent so far.
+    expect(check).toMatchObject({ allowed: true, spentMicros: 384_000, worstCaseMicros: 182_271 });
+    // The fallback rule (worst case = total spent) would have stopped this session at half its budget.
+    expect(checkBudget({ ...base, records: Array.from({ length: 40 }, () => cliCostOnly(9_600)), budgetMicros: 600_000 }).allowed).toBe(false);
+    // Still refused once spent + the cold re-write would pass the limit.
+    expect(checkBudget({ ...base, budgetMicros: 566_270 }).allowed).toBe(false);
+    expect(checkBudget({ ...base, budgetMicros: 566_271 }).allowed).toBe(true);
+  });
+
+  it('Claude Code CLI token bound: never below what a cold turn really costs at Claude prices', () => {
+    const cli = { kind: 'claude-cli' as const, reportsCost: true };
+    const mixes = [
+      { input: 100, read: 60_000, written: 1_000, output: 300 }, // warm turn of a long conversation
+      { input: 3_000, read: 0, written: 0, output: 200 }, // prompt too short to cache
+      { input: 50, read: 0, written: 8_000, output: 900 }, // first turn: context written to the cache
+      { input: 10, read: 150_000, written: 200, output: 50 }, // very long conversation, short answer
+    ];
+    for (const p of [1, 3, 5, 15]) {
+      for (const write of [1.25, 2]) {
+        for (const t of mixes) {
+          for (const maxOutputTokens of [100, 1_000, 8_000]) {
+            const promptChars = 2_400;
+            const context = t.input + t.read + t.written + t.output + Math.ceil(promptChars / 3);
+            // Cache expired: the whole context written again, read again by 3 continuation calls
+            // (each also re-reading the answer so far), and all 4 calls answering with the full output cap.
+            const coldTurn = p * (write * context + 3 * 0.1 * (context + 3 * maxOutputTokens) + 4 * 5 * maxOutputTokens);
+            const worst = checkBudget({ capabilities: cli, pricing: null, promptChars, maxOutputTokens, budgetMicros: 1e12, records: [claudeTurn(p, write, t)] }).worstCaseMicros!;
+            expect(worst, JSON.stringify({ p, write, t, maxOutputTokens })).toBeGreaterThanOrEqual(Math.floor(coldTurn));
+          }
+        }
+      }
+    }
   });
 
   it('no app spending limit allows the call; a set limit with an unboundable cost refuses', () => {

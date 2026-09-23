@@ -303,7 +303,16 @@ abort, unreachable server.
   round 1. Both decisions passed the engine's validation. The "$0.0062" recorded for round 2 at the time was the
   CLI's **running total for the conversation** (see *Correction* above); round 2's own share was about $0.0034
   ($0.0062 − $0.0028). Because the conversation grows, input tokens per round grow too; the app budget check
-  accounts for this with the CLI-reported per-turn cost.
+  accounts for this (see below).
+- **App spending limit with the CLI.** Before each turn Luck bounds what the turn could cost if the prompt cache
+  has expired: the whole conversation (the last turn's input, cache-read, cache-write and output tokens plus the
+  new observation) written again at the 1-hour cache-write price and re-read by up to 3 continuation calls, plus
+  4 × the output cap. The price per token comes from the last turn's CLI-reported cost divided by its tokens
+  weighted with the cheapest Claude multipliers, so it can only be too high. The next turn is sent only while
+  spent + that bound fits the limit, so a long session can use most of its limit (a 40-turn test conversation of
+  60 000 tokens could spend about 85 % of it). When the CLI reports no tokens, the bound falls back to
+  max(2 × the last turn, the session's CLI total so far), which stops a session at about half its limit. The
+  floor is $0.05 and a pricing assumption, when set, can only raise the bound.
 - **Framing.** The opening message states the true context (a local simulation for an AI decision experiment, virtual
   credits only). It does not instruct the model to ignore its guidelines. If a model declines, the refusal is recorded
   as invalid output and the session pauses — it is never converted into a bet.

@@ -474,12 +474,14 @@ export function useLuck(opts: UseLuckOptions = {}) {
    * reported as a page error (the connection indicator shows an unreachable server) and the current copy is
    * kept. An unchanged result is not dispatched, so an open form is not re-synced for nothing.
    */
-  const refreshSettings = useCallback(async (): Promise<void> => {
+  /** `applyIf` is checked when the response arrives (e.g. "the form has no unsaved changes"). */
+  const refreshSettings = useCallback(async (opts: { applyIf?: () => boolean } = {}): Promise<void> => {
     const current = beginSettingsRead();
     try {
       const settings = await api.getSettings();
       // A save or a newer read was started meanwhile: its result wins (unless nothing is loaded yet).
       if (!current() && settingsRef.current !== null) return;
+      if (opts.applyIf && !opts.applyIf()) return;
       if (sameSettings(settings, settingsRef.current)) return;
       dispatch({ type: 'settings', settings });
     } catch {

@@ -242,7 +242,8 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
    * session is no longer plainly running (Pause requested) or a Step is armed; the caller then
    * re-checks the boundary. A settings change wakes it too and `durationMs` is read again, so a
    * new roundPacingMs applies to the wait in progress (measured from its start). A wake that
-   * changed nothing (e.g. a Pause withdrawn by Start) keeps waiting for the remaining time.
+   * changed nothing (e.g. a Pause withdrawn by Start) keeps waiting for the remaining time. The wait
+   * never runs past the session's runtime limit.
    */
   async function waitBetweenDecisions(h: RunnerHandle, durationMs: () => number): Promise<void> {
     const started = core.now().getTime();
@@ -250,7 +251,12 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
       if (h.controller.signal.aborted) return;
       const s = core.repo.getSession(h.sessionId);
       if (!s || s.status !== 'running' || (h.stepOnce && h.last === 'none')) return;
-      const remaining = started + Math.max(0, durationMs()) - core.now().getTime();
+      const now = core.now().getTime();
+      let remaining = started + Math.max(0, durationMs()) - now;
+      // Runtime keeps counting while waiting: a runtime limit ends the wait when it is reached.
+      if (s.limits.maxRuntimeSec !== null) {
+        remaining = Math.min(remaining, s.limits.maxRuntimeSec * 1000 - (s.runtimeMs + Math.max(0, now - h.lastTick)));
+      }
       if (remaining <= 0) return;
       const wake = new AbortController();
       const forward = () => wake.abort(h.controller.signal.reason);

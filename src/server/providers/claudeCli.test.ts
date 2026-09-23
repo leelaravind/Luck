@@ -15,11 +15,13 @@ import type { DecisionRequest, ProviderAdapter, ResolvedProviderConfig } from '.
 
 const FAKE = fileURLToPath(new URL('../../../tests/fixtures/fake-claude.mjs', import.meta.url));
 /**
- * A private folder for THIS test process (mkdtemp gives it a unique name). Test runs that happen at
- * the same time never share it, and afterAll deletes only this folder, never another run's files
- * (the fake CLI keeps each conversation's state in it while a test runs).
+ * A private folder for THIS test process under the repository's gitignored tmp/ (mkdtemp gives it a
+ * unique name). Test runs that happen at the same time never share it, and afterAll deletes only this
+ * folder, never another run's files (the fake CLI keeps each conversation's state in it while a test runs).
  */
-const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'luck-claudecli-test-'));
+const REPO_TMP = fileURLToPath(new URL('../../../tmp/', import.meta.url));
+fs.mkdirSync(REPO_TMP, { recursive: true });
+const TMP_ROOT = fs.mkdtempSync(path.join(REPO_TMP, 'claudecli-test-'));
 /**
  * A folder as the OS reports it to a child's process.cwd(): symlinks resolved (macOS's temp dir sits
  * under /var, a link to /private/var) and case folded (Windows paths ignore case).

@@ -1,8 +1,8 @@
 /**
- * Production static serving + SPA fallback, using a tiny FIXTURE build written to tmp/1
- * (not the real dist/web).
+ * Production static serving + SPA fallback, using a tiny FIXTURE build written to a private
+ * tmp/static-test-* folder (not the real dist/web).
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
@@ -10,9 +10,12 @@ import { buildApp } from '../app.js';
 import { findRepoRoot } from '../config.js';
 import { OK_HEADERS, createFakeService, testConfig } from './__tests__/fake-service.js';
 
-const webDir = join(findRepoRoot(), 'tmp', '1', 'fixture-web-dist');
+/** This test process's own folder (mkdtemp): test runs that overlap never share or delete each other's files. */
+mkdirSync(join(findRepoRoot(), 'tmp'), { recursive: true });
+const baseDir = mkdtempSync(join(findRepoRoot(), 'tmp', 'static-test-'));
+const webDir = join(baseDir, 'fixture-web-dist');
 /** A file NEXT TO the web root that must never be reachable through it. */
-const outsideFile = join(findRepoRoot(), 'tmp', '1', 'fixture-outside-secret.txt');
+const outsideFile = join(baseDir, 'fixture-outside-secret.txt');
 const OUTSIDE_MARKER = 'FIXTURE-OUTSIDE-WEB-ROOT-4d1c';
 
 beforeAll(() => {
@@ -22,8 +25,7 @@ beforeAll(() => {
   writeFileSync(outsideFile, OUTSIDE_MARKER);
 });
 afterAll(() => {
-  rmSync(webDir, { recursive: true, force: true });
-  rmSync(outsideFile, { force: true });
+  rmSync(baseDir, { recursive: true, force: true });
 });
 
 let app: FastifyInstance | null = null;

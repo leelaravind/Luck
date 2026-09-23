@@ -148,6 +148,10 @@ describe('pricing on save (AppSettingsPatch)', () => {
     // A non-built-in key is not "reset" (it is removed with removeRow instead).
     act(() => result.current.resetRow('anthropic:mine'));
     expect(result.current.patch).toEqual({ pricingRemove: ['openai:default-model'] });
+    // "Add" with a key already in the table changes nothing: the pending reset is still sent.
+    act(() => result.current.addRow('openai:default-model'));
+    expect(result.current.rows.find((r) => r.key === 'openai:default-model')?.resetPending).toBe(true);
+    expect(result.current.patch).toEqual({ pricingRemove: ['openai:default-model'] });
 
     // Editing the row again cancels the pending reset and sends the edit instead.
     act(() => result.current.updateRow('openai:default-model', 'input', '4'));

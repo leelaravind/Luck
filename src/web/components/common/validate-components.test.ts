@@ -1,12 +1,14 @@
-// Tests for scripts/validate-components.mjs (runs the real script with node on fixture files in tmp/4).
+// Tests for scripts/validate-components.mjs (runs the real script with node on fixture files in a
+// private tmp/validator-fixtures-* folder: overlapping test runs never share or delete each other's files).
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 const ROOT = path.resolve(__dirname, '../../../..');
 const SCRIPT = path.join(ROOT, 'scripts/validate-components.mjs');
-const DIR = path.join(ROOT, 'tmp/4/validator-fixtures');
+fs.mkdirSync(path.join(ROOT, 'tmp'), { recursive: true });
+const DIR = fs.mkdtempSync(path.join(ROOT, 'tmp', 'validator-fixtures-'));
 
 function run(...targets: string[]) {
   const r = spawnSync(process.execPath, [SCRIPT, ...targets], { encoding: 'utf8', cwd: ROOT });
@@ -19,7 +21,6 @@ function write(name: string, code: string): string {
   return p;
 }
 
-beforeAll(() => fs.mkdirSync(DIR, { recursive: true }));
 afterAll(() => fs.rmSync(DIR, { recursive: true, force: true }));
 
 describe('validate-components script', () => {

@@ -290,6 +290,25 @@ describe('waits between decisions never hold up a control (60 s round pacing, fi
     expect(failed[0]!.message).not.toMatch(/keeps running|next decision in/);
   });
 
+  it('a runtime limit ends the pacing wait when it is reached (never up to 60 s past the limit)', async () => {
+    const adapter = fakeAdapter();
+    const waits: number[] = [];
+    let h: Harness | null = null;
+    // A sleep that lets the full (fake) time pass.
+    const sleep = async (ms: number) => {
+      waits.push(ms);
+      h!.clock.advance(ms);
+    };
+    h = harness({ adapters: [adapter], sleep, presentationDelayMs: defaultRoundPacingMs });
+    h.service.updateSettings({ roundPacingMs: PACING_60S });
+    const s = h.service.createSession({ player: fixturePlayer, limits: { maxRuntimeSec: 5 } }, h.key()).session;
+    await h.service.control(s.id, 'start', h.key());
+    await waitUntil(() => status(h!, s.id) === 'completed', 'completed', 2_000);
+    expect(h.repo.getSession(s.id)).toMatchObject({ endReason: 'max_runtime', roundsPlayed: 1, runtimeMs: 5_000 });
+    expect(waits).toEqual([5_000]); // the rest of the runtime, not the 60 s pacing
+    expect(adapter.calls).toHaveLength(1);
+  });
+
   it('a changed roundPacingMs applies to the wait in progress (measured from its start)', async () => {
     const { adapter, waits, h } = paced();
     const s = h.service.createSession({ player: fixturePlayer, limits: { maxRounds: 2 } }, h.key()).session;
