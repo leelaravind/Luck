@@ -91,7 +91,10 @@ export interface SessionLimits {
   decisionTimeoutMs: number;
   /** Retries after the first attempt for one decision (bounded). */
   maxRetries: number;
-  /** Consecutive failed decisions before the session pauses. */
+  /**
+   * Consecutive failed decisions (each after its bounded retries) before the session pauses.
+   * Default 1: a provider failure pauses the session right after its retries are exhausted.
+   */
   maxConsecutiveFailures: number;
   /** Completed rounds included in the model observation. */
   historyWindow: number;
@@ -110,7 +113,7 @@ export const DEFAULT_LIMITS: SessionLimits = {
   budgetMicros: 250_000, // $0.25
   decisionTimeoutMs: 60_000,
   maxRetries: 2,
-  maxConsecutiveFailures: 3,
+  maxConsecutiveFailures: 1,
   historyWindow: 20,
 };
 

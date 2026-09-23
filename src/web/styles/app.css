@@ -112,6 +112,11 @@
   );
 }
 
+/* Visible focus on the dark felt: the teal ring would disappear against emerald. */
+.felt-surface :focus-visible {
+  outline-color: var(--color-champagne-light);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

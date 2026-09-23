@@ -209,6 +209,11 @@ export interface DecisionRequest {
   temperature?: number;
   /** Remaining app budget in USD for this call (Claude Code CLI --max-budget-usd). null = none. */
   maxBudgetUsd: number | null;
+  /**
+   * Stable key of the Luck session making the request. Providers that keep a conversation open
+   * (Claude Code CLI: one resumed conversation per Luck session) use it; others ignore it.
+   */
+  conversationKey?: string;
 }
 
 export interface ProviderCallResult {

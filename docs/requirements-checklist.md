@@ -1,5 +1,28 @@
 # Requirements checklist
 
+## Increments and delivery gates
+
+Built in three small increments, each integrated, tested and independently reviewed (A11) before the next:
+
+1. **Manual roulette** — valid bets, correct payouts, wheel alignment, saved rounds.
+2. **Autonomous play** — provider adapters, validated decisions, usage tracking, session controls.
+3. **Product readiness** — recovery, security, accessibility, exports, setup docs, GitHub delivery.
+
+Journey under review: clean checkout → install → configure → launch → select player → start session →
+place validated bets → spin → settle → update usage/history → pause/stop → restart → recover → export.
+
+| Gate | Passes when |
+|---|---|
+| Correctness | rules, accounting and all 37 wheel outcomes verified |
+| Reliability | duplicate actions, stale responses, failures and restart recovery verified |
+| Security | credentials protected, localhost boundaries enforced, spending controls effective |
+| Usability | desktop/mobile inspection done, errors are clear |
+| Reproducibility | README commands verified from a clean checkout |
+| Evidence | live-provider tests separated from fixtures; remaining gaps disclosed |
+
+Not release-ready while any critical or high-severity defect is open. Defects get an owner, a fix and a retest;
+the reviewer confirms closure.
+
 Status values: **verified** (evidence recorded) · **implemented-unverified** · **blocked** · **todo**.
 Owners refer to the build allocation (A1–A10 implementation, A11 independent reviewer, L = lead).
 Evidence must be real: a test name, a command output, or a visual check. No invented counts.

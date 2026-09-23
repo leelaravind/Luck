@@ -1,0 +1,7 @@
+# OPTIONAL — only for the Laya player. Not part of the base npm install.
+# Install into a separate virtual environment (see optional/laya/README.md):
+#   python -m venv .venv-laya
+#   .venv-laya/Scripts/python -m pip install -r optional/laya/requirements.txt   (Windows)
+#   .venv-laya/bin/python -m pip install -r optional/laya/requirements.txt       (macOS/Linux)
+# Laya is Apache-2.0 (Convai Innovations). The "serve" extra provides the laya-serve HTTP server.
+laya[serve]==0.3.7

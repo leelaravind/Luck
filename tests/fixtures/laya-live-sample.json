@@ -1,0 +1,47 @@
+{
+  "_note": "REAL response captured from a local laya-serve (laya 0.3.7, english checkpoint, CPU) on 2026-09-23 by the lead. Used as a realistic fixture shape; tests using it are still fixture tests.",
+  "request": {
+    "model": "english",
+    "questions": {
+      "action": {
+        "type": "choice",
+        "criteria": [
+          "skip",
+          "red",
+          "black",
+          "stop"
+        ]
+      }
+    }
+  },
+  "response": {
+    "model": "laya-rl-agent",
+    "answers": {
+      "action": {
+        "type": "choice",
+        "choice": "black",
+        "probabilities": {
+          "skip": 0.1155,
+          "red": 0.2835,
+          "black": 0.4044,
+          "stop": 0.1967
+        },
+        "confidence": 0.0676,
+        "action": {
+          "act_probability": 1
+        }
+      }
+    },
+    "usage": {
+      "input_tokens": 78,
+      "output_tokens": 0
+    },
+    "routing": {
+      "model": "english",
+      "repo": "convaiinnovations/laya",
+      "reason": "explicit model='english'",
+      "detection": null,
+      "workflow": null
+    }
+  }
+}
