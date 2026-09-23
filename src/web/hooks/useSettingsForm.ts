@@ -125,9 +125,15 @@ export function useSettingsForm(settings: AppSettings | null) {
   const serverPacingMs = settings?.roundPacingMs ?? DEFAULT_ROUND_PACING_MS;
   const [pacingSec, setPacingSec] = useState(() => pacingToInput(serverPacingMs));
   const builtInKeys = settings?.builtInPricingKeys ?? NO_KEYS;
-  const [rows, setRows] = useState<PricingRow[]>(() => pricingToRows(settings?.pricing ?? {}, builtInKeys));
-  /** Keys removed in this form since the settings were last loaded (sent as `pricingRemove`). */
-  const [removed, setRemoved] = useState<readonly string[]>(NO_KEYS);
+  /**
+   * The pricing rows and the keys removed in this form since the settings were last loaded (sent as
+   * `pricingRemove`). One state, so every action updates both together, also when several run in one batch.
+   */
+  const [pricingState, setPricingState] = useState<{ rows: PricingRow[]; removed: readonly string[] }>(() => ({
+    rows: pricingToRows(settings?.pricing ?? {}, builtInKeys),
+    removed: NO_KEYS,
+  }));
+  const { rows, removed } = pricingState;
 
   // Re-sync when the server's settings change (after a save, the first load or a refresh).
   const { reset } = limitsForm;
@@ -137,27 +143,35 @@ export function useSettingsForm(settings: AppSettings | null) {
     setAnimationSpeed(settings.animationSpeed);
     setReduceMotion(settings.reduceMotion);
     setPacingSec(pacingToInput(settings.roundPacingMs ?? DEFAULT_ROUND_PACING_MS));
-    setRows(pricingToRows(settings.pricing ?? {}, settings.builtInPricingKeys ?? NO_KEYS));
-    setRemoved(NO_KEYS);
+    setPricingState({ rows: pricingToRows(settings.pricing ?? {}, settings.builtInPricingKeys ?? NO_KEYS), removed: NO_KEYS });
   }, [settings, reset]);
 
-  const updateRow = useCallback((key: string, field: 'input' | 'output' | 'cacheRead' | 'cacheWrite', value: string) => {
-    // Editing a row cancels a pending "Reset to default" for it.
-    setRows((rs) => rs.map((r) => (r.key === key ? { ...r, [field]: value, dirty: true, resetPending: false } : r)));
-    setRemoved((ks) => (ks.includes(key) && builtInKeys.includes(key) ? ks.filter((k) => k !== key) : ks));
-  }, [builtInKeys]);
+  const updateRow = useCallback(
+    (key: string, field: 'input' | 'output' | 'cacheRead' | 'cacheWrite', value: string) => {
+      // Editing a row cancels a pending "Reset to default" for it.
+      setPricingState((p) => ({
+        rows: p.rows.map((r) => (r.key === key ? { ...r, [field]: value, dirty: true, resetPending: false } : r)),
+        removed: p.removed.includes(key) && builtInKeys.includes(key) ? p.removed.filter((k) => k !== key) : p.removed,
+      }));
+    },
+    [builtInKeys],
+  );
   const addRow = useCallback(
     (key: string) => {
-      // A key already in the table is left alone, including a pending "Reset to default" on it.
-      if (rows.some((r) => r.key === key)) return;
-      setRows((rs) => [
-        ...rs,
-        { key, input: '', output: '', cacheRead: '', cacheWrite: '', source: 'user', asOf: '', builtIn: builtInKeys.includes(key), dirty: true },
-      ]);
-      // Added again after a removal: it is saved as a new value, not deleted.
-      setRemoved((ks) => (ks.includes(key) ? ks.filter((k) => k !== key) : ks));
+      setPricingState((p) => {
+        // A key already in the table is left alone, including a pending "Reset to default" on it.
+        if (p.rows.some((r) => r.key === key)) return p;
+        return {
+          rows: [
+            ...p.rows,
+            { key, input: '', output: '', cacheRead: '', cacheWrite: '', source: 'user', asOf: '', builtIn: builtInKeys.includes(key), dirty: true },
+          ],
+          // Added again after a removal: it is saved as a new value, not deleted.
+          removed: p.removed.filter((k) => k !== key),
+        };
+      });
     },
-    [rows, builtInKeys],
+    [builtInKeys],
   );
   /**
    * A built-in row the user overrode (source 'user') can be reset: the override is dropped on save
@@ -166,8 +180,10 @@ export function useSettingsForm(settings: AppSettings | null) {
   const resetRow = useCallback(
     (key: string) => {
       if (!builtInKeys.includes(key)) return;
-      setRows((rs) => rs.map((r) => (r.key === key && r.source === 'user' ? { ...r, resetPending: true, dirty: false } : r)));
-      setRemoved((ks) => (ks.includes(key) ? ks : [...ks, key]));
+      setPricingState((p) => ({
+        rows: p.rows.map((r) => (r.key === key && r.source === 'user' ? { ...r, resetPending: true, dirty: false } : r)),
+        removed: p.removed.includes(key) ? p.removed : [...p.removed, key],
+      }));
     },
     [builtInKeys],
   );
@@ -175,8 +191,10 @@ export function useSettingsForm(settings: AppSettings | null) {
   const removeRow = useCallback(
     (key: string) => {
       if (builtInKeys.includes(key)) return;
-      setRows((rs) => rs.filter((r) => r.key !== key));
-      setRemoved((ks) => (ks.includes(key) ? ks : [...ks, key]));
+      setPricingState((p) => ({
+        rows: p.rows.filter((r) => r.key !== key),
+        removed: p.removed.includes(key) ? p.removed : [...p.removed, key],
+      }));
     },
     [builtInKeys],
   );

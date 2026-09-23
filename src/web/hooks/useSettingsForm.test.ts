@@ -160,6 +160,23 @@ describe('pricing on save (AppSettingsPatch)', () => {
     expect(result.current.patch?.pricing?.['openai:default-model']?.inputPerMTokUsd).toBe(4);
   });
 
+  it('actions in one batch see each other (rows and removals change together)', () => {
+    const s = settings({ pricing: { 'anthropic:mine': USER_ROW } }); // one object: a new one per render would re-sync forever
+    const { result } = renderHook(() => useSettingsForm(s));
+    act(() => {
+      result.current.addRow('openai:fixture-new');
+      result.current.addRow('openai:fixture-new');
+    });
+    expect(result.current.rows.filter((r) => r.key === 'openai:fixture-new')).toHaveLength(1);
+    // Removed and added again in the same batch: the row stays and is not deleted on save.
+    act(() => {
+      result.current.removeRow('anthropic:mine');
+      result.current.addRow('anthropic:mine');
+    });
+    expect(result.current.rows.some((r) => r.key === 'anthropic:mine')).toBe(true);
+    expect(result.current.patch?.pricingRemove).toBeUndefined();
+  });
+
   it('an orphan default-assumption row (key not built in) is removable', () => {
     const s = settings({ pricing: { 'openai:default-model': DEFAULT_ROW, 'openai:orphan-fixture': ORPHAN_ROW } });
     const { result } = renderHook(() => useSettingsForm(s));

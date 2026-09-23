@@ -305,14 +305,22 @@ abort, unreachable server.
   ($0.0062 − $0.0028). Because the conversation grows, input tokens per round grow too; the app budget check
   accounts for this (see below).
 - **App spending limit with the CLI.** Before each turn Luck bounds what the turn could cost if the prompt cache
-  has expired: the whole conversation (the last turn's input, cache-read, cache-write and output tokens plus the
-  new observation) written again at the 1-hour cache-write price and re-read by up to 3 continuation calls, plus
-  4 × the output cap. The price per token comes from the last turn's CLI-reported cost divided by its tokens
-  weighted with the cheapest Claude multipliers, so it can only be too high. The next turn is sent only while
-  spent + that bound fits the limit, so a long session can use most of its limit (a 40-turn test conversation of
-  60 000 tokens could spend about 85 % of it). When the CLI reports no tokens, the bound falls back to
-  max(2 × the last turn, the session's CLI total so far), which stops a session at about half its limit. The
-  floor is $0.05 and a pricing assumption, when set, can only raise the bound.
+  has expired: the whole conversation (the newest turn whose input, cache-read, cache-write and output tokens were
+  all reported, plus the new observation) written again at the 1-hour cache-write price (2× input), re-read by up
+  to 3 continuation calls, plus 4 × the output cap at 5× input. The price per token is, in this order: your pricing
+  assumption; the highest price the last turn's CLI-reported cost allows — its cost divided by its tokens, each
+  weighted with the cheapest rate that model has (cache reads 0.025× on Claude Fable 5.1, 0.05× on Claude Opus 5.5,
+  0.1× on the other models the bundled reference prices, 0.025× for any other model), used only when that turn was
+  made with the configured model; the configured model's built-in price; else the highest known Claude price
+  ($10/MTok). On the first turn the context is the prompt plus 1 000 tokens the CLI adds. The next turn is sent only
+  while spent + that bound fits the limit, so a long session can use most of its limit (a 40-turn test
+  conversation of 60 000 tokens on a 0.1× model: worst case 169 k µ$ against 384 k µ$ spent). On Claude Fable 5.1 a
+  cold turn really costs up to 80 × a warm one, so the bound — and the share of a small limit that can be used — is
+  correspondingly more cautious. When the CLI reports no tokens, the bound falls back to max(2 × the last turn, the
+  session's CLI total so far), which stops a session at about half its limit. The floor is $0.05.
+  **Limit:** with no model configured the CLI uses its own default model, which could change between two turns
+  (e.g. after a CLI update) to a dearer one; the CLI's own `--max-budget-usd` stop (the remaining budget) still
+  ends such a turn after the API call in progress.
 - **Framing.** The opening message states the true context (a local simulation for an AI decision experiment, virtual
   credits only). It does not instruct the model to ignore its guidelines. If a model declines, the refusal is recorded
   as invalid output and the session pauses — it is never converted into a bet.

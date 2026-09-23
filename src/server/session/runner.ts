@@ -326,6 +326,9 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
         switch (outcome.kind) {
           case 'blocked_budget':
             return finishCompleted(h, 'budget_exhausted', outcome.message);
+          case 'runtime_limit':
+            core.log(id, 'warn', 'decision_failed', outcome.message);
+            return finishCompleted(h, 'max_runtime', `Completed: reached the runtime limit of ${s.limits.maxRuntimeSec} s.`);
           case 'failed': {
             // Each failed decision already used its bounded retries. Pause once the configured number
             // of consecutive failed decisions is reached (default 1 = pause after the first one).

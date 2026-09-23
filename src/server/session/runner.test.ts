@@ -309,6 +309,19 @@ describe('waits between decisions never hold up a control (60 s round pacing, fi
     expect(adapter.calls).toHaveLength(1);
   });
 
+  it('a failed attempt is not retried when its backoff would end after the runtime limit: completes (max_runtime), one request', async () => {
+    const { adapter, waits, h } = paced({ fallback: () => failure('rate_limited', true, { retryAfterMs: 30_000, httpStatus: 429 }) });
+    const s = h.service.createSession({ player: fixturePlayer, limits: { maxRetries: 2, maxRuntimeSec: 5 } }, h.key()).session;
+    await h.service.control(s.id, 'start', h.key());
+    await waitUntil(() => status(h, s.id) === 'completed', 'completed', 2_000);
+    expect(h.repo.getSession(s.id)).toMatchObject({ endReason: 'max_runtime', roundsPlayed: 0 });
+    expect(adapter.calls).toHaveLength(1); // no retry after the limit
+    expect(waits).toEqual([]); // and no 30 s backoff wait
+    const decision = h.service.listDecisions(s.id)[0]!;
+    expect(decision).toMatchObject({ status: 'failed', attempts: 1 });
+    expect(decision.errorMessage).toMatch(/not retried because the session's runtime limit of 5 s is reached first/);
+  });
+
   it('a changed roundPacingMs applies to the wait in progress (measured from its start)', async () => {
     const { adapter, waits, h } = paced();
     const s = h.service.createSession({ player: fixturePlayer, limits: { maxRounds: 2 } }, h.key()).session;

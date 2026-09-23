@@ -54,6 +54,8 @@ export type DecisionOutcome =
   | { kind: 'skip'; decisionId: string; explanation: string | null }
   | { kind: 'stop'; decisionId: string; explanation: string | null }
   | { kind: 'blocked_budget'; decisionId: string; message: string }
+  /** A failed attempt was not retried because the session's runtime limit is reached before the retry. */
+  | { kind: 'runtime_limit'; decisionId: string; message: string }
   | {
       kind: 'failed';
       decisionId: string;
@@ -249,6 +251,9 @@ export async function requestAiDecision(
   const decision = core.insertDecision(newDecision(core, session, obs.roundNumber, model));
   const startedAtMs = core.now().getTime();
   const elapsed = () => Math.max(0, core.now().getTime() - startedAtMs);
+  /** Runtime left under the session's limit (the runner flushed session.runtimeMs just before), or null. */
+  const runtimeLeftMs = () =>
+    limits.maxRuntimeSec === null ? null : limits.maxRuntimeSec * 1000 - (session.runtimeMs + elapsed());
 
   const finish = (patch: Partial<DecisionRecord>) =>
     core.updateDecision(decision.id, { completedAt: core.nowIso(), latencyMs: elapsed(), ...patch });
@@ -292,6 +297,7 @@ export async function requestAiDecision(
         capabilities: caps,
         pricing,
         budgetMicros: limits.budgetMicros,
+        model,
         promptChars: systemPrompt.length + userPrompt.length,
         maxOutputTokens: limits.maxOutputTokens,
         records: core.repo.listUsage(session.id),
@@ -457,6 +463,15 @@ export async function requestAiDecision(
     // Retryable provider failure: back off before the next attempt (abortable by Stop).
     if (attempt < maxAttempts && lastFailure?.type === 'provider') {
       const delay = computeBackoffMs(attempt, lastFailure.error);
+      const runtimeLeft = runtimeLeftMs();
+      if (runtimeLeft !== null && runtimeLeft <= delay) {
+        // The retry would start after the runtime limit: no further (paid) request is sent.
+        const message =
+          `${label} attempt ${attempt} failed (${lastFailure.error.code}); not retried because the session's runtime limit ` +
+          `of ${limits.maxRuntimeSec} s is reached first.`;
+        finish({ status: 'failed', errorCode: lastFailure.error.code, errorMessage: message, attempts: attempt });
+        return { kind: 'runtime_limit', decisionId: decision.id, message };
+      }
       core.log(session.id, 'warn', 'provider_retry', `${label} attempt ${attempt} failed (${lastFailure.error.code}); retrying in ${delay} ms`);
       const aborted = await waitAbortable(core.sleep, delay, runSignal);
       if (aborted) return cancelled(runSignal.reason === 'shutdown' ? 'shutdown' : 'stop');

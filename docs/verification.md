@@ -193,9 +193,8 @@ items closed; the new defects below were fixed.
   CLI turn was at least the session's total CLI cost so far, so a turn was only sent while spent + spent fit the
   limit. It is now a cold re-write of the conversation bounded from the last turn's reported cost and tokens (see
   [providers-cli-laya.md](providers-cli-laya.md#maintained-conversation-and-connection-check-added-after-live-testing));
-  a 40-turn test conversation of 60 000 tokens can now spend about 85 % of its limit instead of 50 %.
-  `units.test.ts` checks the bound against a cold turn's real cost at Claude price ratios (4 prices × both cache
-  lifetimes × 4 token mixes × 3 output caps); the old rule remains only when the CLI reports no tokens.
+  the old rule remains only when the CLI reports no tokens. **The first version of this fix was wrong** — see the
+  fourth round below.
 - **"Reset to default", then "Add" with the same key, silently cancelled the reset (low).** Adding a key that is
   already in the table now changes nothing (`useSettingsForm.test.ts`); an App-level test now clicks "Reset to
   default", saves and checks the row is back at its built-in value.
@@ -208,6 +207,35 @@ items closed; the new defects below were fixed.
   (two overlapping runs of both files pass). The other tests already used unique files.
 - **Docs.** The CI file and README no longer say Node 26 is outside the test matrix (it is in it); `testing.md`
   lists the per-run test folders.
+
+## Fourth fix round — adversarial review of the third round
+
+A third reviewer tried to refute the third round's changes with numeric probes.
+
+- **The new CLI bound was not an upper bound (high).** It assumed cache reads cost at least 0.1× input, but the
+  bundled Claude API reference prices them at 0.025× on Claude Fable 5.1 and 0.05× on Claude Opus 5.5, so for a
+  mostly-read turn the price derived from its cost came out too low (the reviewer's probes: 1.3–2.8× under a real
+  cold turn on Fable 5.1). The same review found: unreported cache counts treated as 0; a turn with tokens but a
+  cost of 0 giving a bound of 0; the context taken from the newest priced turn instead of the newest turn; the
+  first turn bounded only by the $0.05 floor (a cold first turn on Fable 5.1 costs about $0.08–0.15); and a turn made
+  with another model used as the price of the next one. The bound now uses each model's stated cache-read rate
+  (0.025× for any model whose rate is not stated), never derives a price from a turn without all four token counts
+  and a positive cost, takes the context from the newest turn with all four counts, prices the first turn at the
+  configured model's built-in price or the highest known Claude price, and ignores a turn made with a different
+  model than the configured one (see [providers-cli-laya.md](providers-cli-laya.md#maintained-conversation-and-connection-check-added-after-live-testing)).
+  `units.test.ts` now checks it against a cold turn's real cost for 6 models (Fable 5.1, Opus 5.5, Sonnet 5,
+  Haiku 4.5, Mythos 5.1 and an unknown $25/MTok model) × both cache lifetimes × 4 token mixes × 3 output caps,
+  and the first turn for every model priced up to $10/MTok. Remaining limit (documented): with no model
+  configured, the CLI's default model could change to a dearer one between two turns; the CLI's own
+  `--max-budget-usd` stop still ends such a turn after the API call in progress.
+- **A retry could be sent after the runtime limit (low).** The backoff between attempts of one decision (up to
+  30 s) was not capped; a failed attempt is now not retried when the retry would start after the runtime limit,
+  and the session completes with "runtime limit" (`runner.test.ts`).
+- **Two pricing actions in one batch could disagree (low).** The rows and the removals are now one state, so
+  e.g. "remove" then "add" of the same key in one batch keeps the row (`useSettingsForm.test.ts`).
+- **The dev-server test's retry could discard a partial leak (low).** Only a request that got no response at all
+  is retried; a response that started and then stalled fails the test, and the warm-up no longer retries inside
+  its own retry loop.
 
 ## Outstanding
 

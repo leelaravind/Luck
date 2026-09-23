@@ -60,9 +60,10 @@ const HTTP_TEST_TIMEOUT_MS = 120_000;
 const LOCAL_TEST_TIMEOUT_MS = 60_000;
 
 /**
- * One request. A request that TIMES OUT (no answer at all, so nothing was disclosed) is sent once more on a
- * fresh connection: a single stalled request on a heavily loaded machine was seen to fail an otherwise clean
- * run. Every assertion still runs on a real answer; any other error fails the test at once.
+ * One request. A request that got NO response at all within the limit (nothing was disclosed) is sent once
+ * more on a fresh connection: a single stalled request on a heavily loaded machine was seen to fail an
+ * otherwise clean run. A response that started and then stalled is never retried (its partial body could
+ * hold a leak), and every other error fails the test at once; every assertion runs on a real answer.
  */
 async function get(urlPath: string, headers: Record<string, string> = {}, method = 'GET'): Promise<Reply> {
   try {
@@ -73,17 +74,21 @@ async function get(urlPath: string, headers: Record<string, string> = {}, method
   }
 }
 
-function getOnce(urlPath: string, headers: Record<string, string>, method: string): Promise<Reply> {
+function getOnce(urlPath: string, headers: Record<string, string> = {}, method = 'GET'): Promise<Reply> {
   return new Promise((resolve, reject) => {
+    let responded = false;
     // agent: false → a fresh connection per request (no keep-alive reuse of a socket the server may be closing)
     const req = http.request({ host: '127.0.0.1', port, path: urlPath, method, agent: false, headers: { Accept: '*/*', ...headers } }, (res) => {
+      responded = true;
       const chunks: Buffer[] = [];
       res.on('data', (c: Buffer) => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString('latin1') }));
       res.on('error', reject);
     });
     req.on('error', reject);
-    req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error(`timeout: ${method} ${urlPath}`)));
+    req.setTimeout(REQUEST_TIMEOUT_MS, () =>
+      req.destroy(new Error(`${responded ? 'stalled after the response started' : 'timeout'}: ${method} ${urlPath}`)),
+    );
     req.end();
   });
 }
@@ -97,7 +102,7 @@ async function warmUp(urls: { path: string; accept?: string }[], deadline: numbe
   for (const u of urls) {
     while (Date.now() < deadline) {
       try {
-        const r = await get(u.path, u.accept ? { Accept: u.accept } : {});
+        const r = await getOnce(u.path, u.accept ? { Accept: u.accept } : {});
         if (r.status === 200) break;
       } catch {
         // timeout / connection reset under load: try again while there is time
