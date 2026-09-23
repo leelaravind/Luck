@@ -59,9 +59,21 @@ export function createDemoPlayer(): DemoPlayer {
       const honesty = 'The rule has no predictive ability; every spin is independent.';
 
       if (obs.balance < stake) {
+        // Can't afford the flat stake: bet everything that is still a legal stake (a multiple of the
+        // increment, >= minStake). Skipping instead would loop forever now that sessions have no
+        // default round limit (reviewer A11b-N2); the runner ends the session below minStake.
+        const inc = Math.max(1, obs.limits.stakeIncrement);
+        const allIn = Math.floor(obs.balance / inc) * inc;
+        if (allIn < obs.limits.minStake) {
+          return {
+            action: 'skip',
+            explanation: `${rule} Balance ${formatCredits(obs.balance)} is below the minimum stake, so this round is skipped. ${honesty}`,
+          };
+        }
         return {
-          action: 'skip',
-          explanation: `${rule} Balance ${formatCredits(obs.balance)} is below the flat stake, so this round is skipped. ${honesty}`,
+          action: 'bet',
+          bets: [{ type, stake: allIn }],
+          explanation: `${rule} Round ${obs.roundNumber}: ${BET_NAMES[type] ?? type}. Balance ${formatCredits(obs.balance)} is below the flat stake, so the remaining ${formatCredits(allIn)} is staked. ${honesty}`,
         };
       }
       return {

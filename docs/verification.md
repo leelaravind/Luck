@@ -7,7 +7,7 @@ What was actually checked, how, and what is still open. Counts are copied from r
 | Check | Result |
 |---|---|
 | `npx tsc -p tsconfig.json --noEmit` and `tsc -p tsconfig.server.json --noEmit` | 0 errors |
-| `npx vitest run` | 46 test files, 1 058 tests passed, 0 failed |
+| `npx vitest run` | 47 test files, 1 063 tests passed, 0 failed |
 | `npm run build` | web bundle + compiled server built; CSS compiled locally, fonts bundled |
 | `node scripts/validate-components.mjs` | 49 components pass (Props interface, no hex in className) |
 | `node scripts/secret-scan.mjs` | clean (210 files) |
@@ -50,6 +50,14 @@ consecutive spins, onSettled once, reduced motion, hidden tab, independent wheel
   unverified claim. Live Claude Code CLI session (haiku, 3 rounds, no budget): three different bet mixes (dozens +
   red/black, dozens + odd/even, dozens + low/high), a named strategy each round, no "stop", conversation resumed each round.
 - **Laya**: "stop" removed from its label set; live 3-round session placed bets and settled.
+- **All game limits optional**: max stake per bet / per round and max bets per round now default to "no limit"
+  (only the balance and the minimum chip constrain a slip); configured limits are still enforced (e2e tests run
+  on a limited session; a default session accepts 3 × 100.00 and 11 bets in one round).
+- **Objective in the prompt**: live Claude Opus 5.5 via the CLI (3 test rounds) mixed red/black with a dozen or column
+  and a straight-up number, named a strategy each round, and chose to skip only when it knew it was the last round.
+  Payout check round 2 (29 black): black 20.00 → 40.00 back, column 2 10.00 → 30.00 back, straight 0 lost → 70.00 returned.
+- **Wheel at rest**: after a reload or session switch the ball rests in the last revealed pocket (no replay, no
+  onSettled); verified in the running app (`data-landed-number` 34 = Last round 34 red) and by a component test.
 - **Mobile**: emulated 390 px viewport (DevTools protocol, `mobile: true`) — page scroll width equals the viewport;
   vertical table with all 37 numbers, controls and chips readable.
 
@@ -58,7 +66,7 @@ consecutive spins, onSettled once, reduced motion, hidden tab, independent wheel
 | ID | Severity | Status |
 |---|---|---|
 | D1 unknown-cost `error` attempts counted as $0 in the budget | high | **fixed** (`budget.ts`), test updated (`units.test.ts`) |
-| D3 reused Idempotency-Key with a different slip returned the old round | medium | **fixed** → 409 `duplicate_request` |
+| D3 reused Idempotency-Key with a different slip returned the old round | medium | **fixed and verified live** → 409 `duplicate_request` (a reordered identical slip still replays). Correction: commit a69822c and an earlier version of this report called D3 fixed while the check was not wired in; the closure review caught it and it was fixed in the following commit with a regression test. |
 | D4 Laya always chose "stop" | medium | **fixed** ("stop" not offered to Laya) and **verified live** (3 rounds) |
 | D5 CLI "Connected" after a version-only check | medium | **fixed**: connection now verified with `claude auth status` |
 | D6 component validator failed on RouletteWheel | low | **fixed** |
@@ -67,6 +75,14 @@ consecutive spins, onSettled once, reduced motion, hidden tab, independent wheel
 | D2 CLI worst-case without pricing is a heuristic floor ($0.05) | medium | open — disclosed here; subscription auth is not billed per call |
 | D7 usage summary shows 0 for never-reported token buckets | low | open (UI shows "N/A"/"Not reported" from capabilities) |
 | D10 checklist evidence | low | this report |
+| A11b-N2 demo player skipped forever when short of its flat stake (no default round limit) | medium | **fixed**: stakes the remaining legal amount; tests updated |
+| A11b-N3 strategy + explanation clipped together | low | **fixed**: separate budgets |
+| A11b-N4 objective text ignored configured limits | low | **fixed**: end conditions built from the session's limits; test added |
+| A11b-N5 CLI worst case ignored the resumed conversation when pricing is set | low | **fixed**: never below 2 × last CLI-reported cost |
+| A11b-N6 no repo test for spin priority over the resting ball | low | **fixed**: RouletteWheel.priority.test.tsx |
+
+Independent closure review (A11, second pass): D1, D4, D5, D6, D8, D9 and the no-limit / stop / strategy / CLI
+conversation / resting-wheel changes verified **closed** with live probes; no critical or high defect open.
 
 ## Clean checkout
 

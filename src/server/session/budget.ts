@@ -37,10 +37,19 @@ export function worstCaseAttemptMicros(input: {
   maxOutputTokens: number;
   records: readonly UsageRecord[];
 }): UsdMicros | null {
+  let lastCliCost: number | null = null;
+  for (const r of input.records) {
+    if (r.costBasis === 'provider-reported' && r.costMicros !== null) lastCliCost = r.costMicros;
+  }
   if (input.pricing) {
     const w = worstCaseCostMicros(estimateInputTokens(input.promptChars), input.maxOutputTokens, input.pricing);
     // null = the pricing entry could not bound this request; fall through (never treat it as $0).
-    if (typeof w === 'number' && Number.isFinite(w)) return Math.ceil(w);
+    if (typeof w === 'number' && Number.isFinite(w)) {
+      // The CLI resumes one conversation per session, re-sending earlier turns: the current prompt alone
+      // under-estimates the input, so never go below 2 × the last CLI-reported cost (reviewer A11b-N5).
+      if (input.capabilities.kind === 'claude-cli' && lastCliCost !== null) return Math.ceil(Math.max(w, 2 * lastCliCost));
+      return Math.ceil(w);
+    }
   }
   if (input.capabilities.kind === 'claude-cli' && input.capabilities.reportsCost) {
     let last: number | null = null;

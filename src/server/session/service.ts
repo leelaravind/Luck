@@ -483,6 +483,16 @@ export function createGameService(deps: GameServiceDeps): GameService {
       // Replay: the same key returns the same round — no second charge, no new outcome.
       const existing = repo.findRoundByIdempotencyKey(sessionId, key);
       if (existing) {
+        // The same key must carry the same bet slip (order-insensitive, identical positions merged).
+        // A different slip is a client error, never silently answered with the old round (reviewer D3).
+        const requested = slipSignature(bets);
+        if (requested === null || requested !== slipSignature(existing.bets)) {
+          throw new GameError(
+            'duplicate_request',
+            'This Idempotency-Key was already used for a different bet slip; nothing was charged again',
+            { roundId: existing.id },
+          );
+        }
         // A committed-but-unfinished round is still owed its (first) outcome and settlement.
         const round = existing.status === 'settled' ? existing : settleStoredRound(roundDeps, existing);
         return { round, snapshot: buildSnapshot(sessionId) };

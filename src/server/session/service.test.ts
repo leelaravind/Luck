@@ -83,6 +83,29 @@ describe('manual round flow', () => {
     expect(h.repo.listLedger(session.id).filter((l) => l.kind === 'payout')).toHaveLength(1);
   });
 
+  it('D3: the same Idempotency-Key with a DIFFERENT slip is refused (409); the same slip in another order replays', () => {
+    const h = harness({ outcomes: [17] });
+    const { session } = h.service.createSession({ player: { kind: 'manual' } }, h.key());
+    const slip = [
+      { type: 'red' as const, stake: 100 },
+      { type: 'split' as const, numbers: [3, 0], stake: 50 },
+    ];
+    const first = h.service.placeManualRound(session.id, slip, 'k-d3');
+    // Same positions and stakes, different order and number order → a genuine replay.
+    const replay = h.service.placeManualRound(session.id, [{ type: 'split', numbers: [0, 3], stake: 50 }, { type: 'red', stake: 100 }], 'k-d3');
+    expect(replay.round.id).toBe(first.round.id);
+    // Different slip under the same key → duplicate_request, nothing charged, no new outcome.
+    expect(() => h.service.placeManualRound(session.id, [{ type: 'black', stake: 100 }], 'k-d3')).toThrow(
+      expect.objectContaining({ code: 'duplicate_request' }),
+    );
+    expect(() => h.service.placeManualRound(session.id, [{ type: 'red', stake: 110 }, { type: 'split', numbers: [0, 3], stake: 50 }], 'k-d3')).toThrow(
+      expect.objectContaining({ code: 'duplicate_request' }),
+    );
+    expect(h.repo.listRounds(session.id)).toHaveLength(1);
+    expect(h.outcome.calls).toBe(1);
+    expect(h.repo.getSession(session.id)!.balance).toBe(first.snapshot.session.balance);
+  });
+
   it('validates bets on the backend and never repairs them', () => {
     const h = harness();
     const { session } = h.service.createSession({ player: { kind: 'manual' } }, h.key());
@@ -174,14 +197,16 @@ describe('demo session (rule-based demo player, fixture outcomes)', () => {
   });
 
   it('completes with insufficient_balance when the balance drops below minStake', async () => {
-    const h = harness();
+    // Demo flat stake is 1 credit (100) > balance 10: it stakes the remaining legal amount (10) instead of
+    // skipping forever (reviewer A11b-N2) and never bets beyond its balance. Fixture 17 is black → red loses.
+    const h = harness({ outcomes: [17] });
     const { session } = h.service.createSession({ player: { kind: 'demo' }, limits: { startingBalance: 10, minStake: 10, maxRounds: null } }, h.key());
     await h.service.control(session.id, 'start', h.key());
-    // Demo stake is 1 credit (100) > balance 10 → it skips (no-bet rounds) and never bets beyond its balance.
-    await waitUntil(() => h.repo.listRounds(session.id).length >= 3, 'skip rounds');
-    await h.service.control(session.id, 'stop', h.key());
-    expect(h.repo.listRounds(session.id).every((r) => r.bets.length === 0 && r.totalStake === 0)).toBe(true);
-    expect(h.repo.getSession(session.id)!.balance).toBe(10);
+    await waitUntil(() => status(h, session.id) === 'completed', 'short-stack completion');
+    const [only] = h.repo.listRounds(session.id);
+    expect(only).toMatchObject({ totalStake: 10, net: -10 });
+    expect(only!.bets).toMatchObject([{ type: 'red', stake: 10 }]);
+    expect(h.repo.getSession(session.id)).toMatchObject({ endReason: 'insufficient_balance', balance: 0, roundsPlayed: 1 });
 
     const h2 = harness({ outcomes: [17] });
     const poor = h2.service.createSession({ player: { kind: 'demo' }, limits: { startingBalance: 100, minStake: 100, stakeIncrement: 100, maxStakePerBet: 100, maxStakePerRound: 100 } }, h2.key()).session;

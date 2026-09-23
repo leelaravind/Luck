@@ -14,6 +14,7 @@ import {
   GameError,
   MAX_EXPLANATION_CHARS,
   MAX_RAW_OUTPUT_CHARS,
+  MAX_STRATEGY_CHARS,
   type AiProviderKind,
   type DecisionRecord,
   type PauseReason,
@@ -237,7 +238,10 @@ export async function requestAiDecision(
 
   const caps = adapter.capabilities;
   const pricing = resolvePricing(core, kind, session.player, cfg.model);
-  const systemPrompt = buildSystemPrompt(obs, { allowStop: session.limits.allowModelStop === true });
+  const systemPrompt = buildSystemPrompt(obs, {
+    allowStop: session.limits.allowModelStop === true,
+    runtimeLimited: session.limits.maxRuntimeSec !== null,
+  });
   const maxAttempts = 1 + Math.max(0, limits.maxRetries);
   const label = caps.label || kind;
   let correctiveNote: string | null = null;
@@ -405,7 +409,7 @@ export async function requestAiDecision(
         // Stored as "Strategy: <name>" on its own first line, then the explanation (the UI splits them).
         const strategyLine = decided.strategy ? `Strategy: ${decided.strategy.replace(/\s+/g, ' ')}` : '';
         const stated = [strategyLine, decided.explanation ?? ''].filter(Boolean).join('\n');
-        const explanation = clip(stated === '' ? null : stated, MAX_EXPLANATION_CHARS);
+        const explanation = clip(stated === '' ? null : stated, MAX_EXPLANATION_CHARS + MAX_STRATEGY_CHARS + 11);
         finish({
           status: 'accepted',
           action: decided.action,

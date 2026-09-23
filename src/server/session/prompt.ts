@@ -9,8 +9,17 @@ import { MAX_EXPLANATION_CHARS, MAX_STRATEGY_CHARS, type GameObservation } from 
 export const MAX_CORRECTIVE_ERRORS = 6;
 const MAX_CORRECTIVE_ERROR_CHARS = 200;
 
-export function buildSystemPrompt(obs: GameObservation, opts: { allowStop?: boolean } = {}): string {
+export function buildSystemPrompt(obs: GameObservation, opts: { allowStop?: boolean; runtimeLimited?: boolean } = {}): string {
   const allowStop = opts.allowStop === true;
+  // What really ends this session (used in the objective and the action description).
+  const endsWhen = [
+    'your balance cannot cover the minimum stake',
+    ...(obs.limits.roundsRemaining !== null ? ['the round limit is reached'] : []),
+    ...(opts.runtimeLimited ? ['the running-time limit is reached'] : []),
+    ...(allowStop ? ['you choose "stop"'] : []),
+    'the user stops it',
+  ];
+  const endsText = endsWhen.length > 1 ? `${endsWhen.slice(0, -1).join(', ')} or ${endsWhen[endsWhen.length - 1]}` : endsWhen[0]!;
   const l = obs.limits;
   const payouts = obs.betTypes.map((b) => `${b.type} ${b.payout}:1`).join(', ');
   const selections = obs.betTypes.map((b) => `- ${b.type}: ${b.selection}`).join('\n');
@@ -41,8 +50,7 @@ export function buildSystemPrompt(obs: GameObservation, opts: { allowStop?: bool
     `- ${rounds}`,
     '',
     'OBJECTIVE',
-    '- Try to grow your balance as much as you can. You decide how much risk to take; the session continues until',
-    '  your balance cannot cover the minimum stake or the user stops it.',
+    `- Try to grow your balance as much as you can. You decide how much risk to take; the session continues until ${endsText}.`,
     '- Repeating the same even-money bet every round is allowed, but it is only one of many strategies. Pick the',
     '  strategy you actually want to follow (for example a progression, number or sector coverage, mixed bets, or',
     '  your own) and adapt it to how the game develops.',
@@ -55,7 +63,7 @@ export function buildSystemPrompt(obs: GameObservation, opts: { allowStop?: bool
     ...(allowStop ? ['{"action":"stop","strategy":"<name>","explanation":"<why>"}'] : []),
     allowStop
       ? '- "bet" places the listed bets for the upcoming round; "skip" sits the round out; "stop" ends the session.'
-      : '- "bet" places the listed bets for the upcoming round; "skip" sits the round out. You cannot end the session: it runs until your balance cannot cover the minimum stake or the user stops it.',
+      : `- "bet" places the listed bets for the upcoming round; "skip" sits the round out. You cannot end the session yourself: it runs until ${endsText}.`,
     '- Every bet type in PAYOUTS is equally allowed, alone or combined. Choose the types, numbers and stakes your own strategy calls for; you may change them from round to round.',
     `- "strategy" names the betting strategy you are following (for example flat betting, Martingale, D'Alembert, Fibonacci, Labouchère, sector or number coverage, or your own), at most ${MAX_STRATEGY_CHARS} characters.`,
     `- "explanation" is plain text, at most ${MAX_EXPLANATION_CHARS} characters, saying why this round's bets follow that strategy.`,

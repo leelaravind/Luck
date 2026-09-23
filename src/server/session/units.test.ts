@@ -98,11 +98,15 @@ describe('demo player (rule-based, not AI)', () => {
     expect(d.explanation.length).toBeLessThanOrEqual(280);
   });
 
-  it('skips when the balance cannot cover the stake', () => {
+  it('short of its flat stake it bets the remaining legal amount (no endless skipping); below minStake it skips', () => {
+    // Reviewer A11b-N2: with no default round limit, skipping here would loop forever.
     const d = createDemoPlayer().decide(obs(3, 99));
-    expect(d.action).toBe('skip');
-    expect(d.bets).toBeUndefined();
-    expect(d.explanation).toMatch(/skipped/);
+    expect(d.action).toBe('bet');
+    expect(d.bets).toEqual([{ type: 'odd', stake: 90 }]);
+    expect(d.explanation).toContain('the remaining V$ 0.90 is staked');
+    const broke = createDemoPlayer().decide(obs(3, 5));
+    expect(broke.action).toBe('skip');
+    expect(broke.explanation).toMatch(/below the minimum stake/);
   });
 
   it('uses max(minStake, 100 rounded to the increment), clamped to the per-bet cap', () => {
@@ -191,6 +195,13 @@ describe('prompts', () => {
     expect(sys).not.toContain('"type":"red"');
     expect(sys).not.toContain('{"action":"stop"');
     expect(sys).toMatch(/You cannot end the session/);
+    // The end conditions follow the session's real limits (reviewer A11b-N4).
+    const roundLimited = buildSystemPrompt(buildObservation(session({ limits: { ...DEFAULT_LIMITS, maxRounds: 3 } }), []), {
+      allowStop: true,
+      runtimeLimited: true,
+    });
+    expect(roundLimited).toMatch(/continues until your balance cannot cover the minimum stake, the round limit is reached, the running-time limit is reached, you choose "stop" or the user stops it/);
+    expect(sys).toMatch(/continues until your balance cannot cover the minimum stake or the user stops it/);
     const withStop = buildSystemPrompt(obs, { allowStop: true });
     expect(withStop).toContain('{"action":"stop"');
     expect(withStop).not.toMatch(/You cannot end the session/);

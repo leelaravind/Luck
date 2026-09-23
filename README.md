@@ -134,7 +134,8 @@ Controls for demo and AI sessions:
 By default a session has **no stopping limits**: it keeps playing until the balance can no longer cover the
 minimum stake, or until you press **Stop**. AI players name the strategy they say they follow, and by default
 they cannot end the session themselves. In the New session dialog you can optionally set a maximum number of
-rounds, a running time, an app spending limit (USD), or let the model end the session.
+rounds, a running time, table limits (maximum stake per bet or per round, maximum bets per round), an app
+spending limit (USD), or let the model end the session. Leaving a field blank means "no limit".
 
 > Virtual credits cost nothing, but model requests may: with an Anthropic/OpenAI **API key** every request is
 > billed to your account, and Claude Code on a subscription uses your plan quota. Set an app spending limit if
