@@ -36,6 +36,11 @@ version from `package.json`.
   server, which proxies `/api` to the API port).
 - **Production** (`npm start`): only the app's own origin on `LUCK_PORT` is accepted. If `dist/web` exists the
   server also serves the built frontend, with a fallback to `index.html` for client-side routes.
+- **Startup message.** Only `npm run dev` (its `dev:server` script passes `--dev-runner` to the server) starts the
+  Vite dev server, so only then does the server say to open `http://127.0.0.1:<LUCK_WEB_PORT>`. A server started
+  directly without `--production` (e.g. `node dist/server/server/index.js`) is in development mode but has no
+  Vite dev server: it points to its own port, which serves a production build from `dist/web` (may be out of
+  date — run `npm run build` to refresh it) when one exists.
 
 ## AI providers
 
@@ -68,7 +73,7 @@ These are not environment variables; change them in the app's **Settings** panel
 | Setting | Default | What it changes |
 |---|---|---|
 | Wheel animation speed (`animationSpeed`: 1× / 2× / Max) | 1× | **Only the wheel animation.** It does not change how often models are called. |
-| Pause between autonomous rounds (`roundPacingMs`) | 7 seconds | How long the server waits after a round before it asks the player (AI model or demo) for the next decision — this is what sets how often models are called. 0–600 s; applies to every autonomous session. |
+| Pause between autonomous rounds (`roundPacingMs`) | 7 seconds | How long the server waits after a round before it asks the player (AI model or demo) for the next decision — this is what sets how often models are called. 0–600 s; applies to every autonomous session (a change also applies to a wait already running). The wait only happens between two decisions: Pause after round, Next round, Stop and a reached limit take effect immediately. |
 | Reduce motion | follow the system | Wheel shown without spinning. |
 | Pricing assumptions | defaults in `src/server/providers/pricing.ts` | Only the *estimated* cost figures and the optional spending-limit check. |
 

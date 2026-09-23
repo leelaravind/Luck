@@ -1,5 +1,5 @@
 import { Save } from 'lucide-react';
-import type { AnimationSpeed, AppSettings } from '../../../shared/contracts';
+import type { AnimationSpeed, AppSettings, AppSettingsPatch } from '../../../shared/contracts';
 import type { SettingsForm } from '../../hooks/useSettingsForm';
 import type { LastError } from '../../state/luckReducer';
 import { Button } from '../common/Button';
@@ -13,13 +13,15 @@ import { PricingEditor } from './PricingEditor';
  * App settings (PUT /api/settings): default limits for NEW sessions, presentation preferences, the pause
  * between autonomous rounds and pricing assumptions. The pause (AppSettings.roundPacingMs) is what sets how
  * often a model is asked for a decision; animation speed only changes the wheel.
+ * The save sends only what was changed here (see useSettingsForm); the dashboard re-reads the settings from
+ * the server whenever this panel is opened, so it does not show (and save over) an old copy.
  */
 export interface SettingsPanelProps {
   readonly form: SettingsForm;
   readonly loaded: boolean;
   readonly saving: boolean;
   readonly error: LastError | null;
-  readonly onSave: (patch: Partial<AppSettings>) => void;
+  readonly onSave: (patch: AppSettingsPatch) => void;
   readonly suggestedPricingKey: string | null;
 }
 
@@ -105,6 +107,7 @@ export function SettingsPanel({ form, loaded, saving, error, onSave, suggestedPr
           onChange={form.updateRow}
           onAdd={form.addRow}
           onRemove={form.removeRow}
+          onReset={form.resetRow}
           suggestedKey={suggestedPricingKey}
         />
       </section>

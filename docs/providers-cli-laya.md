@@ -107,15 +107,29 @@ Earlier versions used `<repo>/tmp/cli-sandbox` (git-ignored, but inside the repo
 ### What the model sees
 
 Luck sends the model: its system prompt (`--system-prompt`), on the first round a short opening message, the
-`GameObservation` JSON on stdin, and the decision JSON schema (`--json-schema`). Nothing else from Luck.
+`GameObservation` JSON on stdin, and the decision JSON schema (`--json-schema`). When an **app spending limit**
+is set, Luck also passes the remaining app budget as `--max-budget-usd`, and the CLI shows that figure to the
+model (`budget_usd` below). Nothing else from Luck.
 
 **The Claude Code CLI adds context of its own to every conversation** — observed on 2026-09-23 (Claude Code
 2.1.280, Windows 11, subscription login) in the CLI's transcript (`attachment` entries in the conversation's
-`.jsonl` under `~/.claude/projects/`): an `environment` snapshot (working directory = the sandbox above, "is a
-git repository: no", platform, shell and OS version), the current `date`, and a `session_context` entry with
-**your account e-mail address**. So the model sees the game observation **plus** that CLI-added context.
-Claude Code 2.1.280 offers no supported flag that switches this off with a subscription login (`--bare`
-requires API-key auth and does not document it), so Luck cannot remove it. It is sent to the same Anthropic account the CLI is logged in to, not to
+`.jsonl` under `~/.claude/projects/`):
+
+| Entry | What the model sees | When |
+|---|---|---|
+| `environment` | working directory (= the sandbox above), "is a git repository: no", platform, shell and OS version | every conversation |
+| `date` | the current date | every conversation |
+| `session_context` | **your account e-mail address** | subscription login |
+| `model` | the model's own identity: its name, exact model id and knowledge cutoff | every conversation |
+| `total_tokens_reminder` | a CLI token counter (`<total_tokens>… tokens left</total_tokens>`) — the CLI's own figure, not a Luck limit and not the per-request output cap | every turn |
+| `budget_usd` | **Luck's remaining app budget** in USD, from `--max-budget-usd`: `{ used, total, remaining }` — e.g. `total` 0.5 on the first turn, then 0.494649 and 0.482874 as the budget was spent | every turn, **only when an app spending limit is set** |
+
+So the model sees the game observation **plus** that CLI-added context — with an app spending limit, including
+how much of that limit is left. `budget_usd` exists only because Luck passes `--max-budget-usd` as the CLI's hard
+cost stop: without an app spending limit no such flag is passed and no `budget_usd` entry appears (checked in two
+transcripts of sessions without a limit). For the other entries,
+Claude Code 2.1.280 offers no supported flag that switches them off with a subscription login (`--bare`
+requires API-key auth and does not document it), so Luck cannot remove them. They are sent to the same Anthropic account the CLI is logged in to, not to
 a third party. With `CLAUDE_CLI_USE_SUBSCRIPTION=false` (API-key auth) this was not checked. To see it yourself,
 open the newest `.jsonl` in the `~/.claude/projects/` folder named after the sandbox path and list its
 `attachment` entries.
@@ -141,8 +155,9 @@ The child is killed immediately. A stream without an `init` event is not trusted
   tools available, agents cannot be started. The CLI's normal telemetry is unchanged.
 - The `init` event shows the CLI opens a local messaging named pipe (`messaging_socket_path`). The app does
   not use it; anything arriving that way could at most change the model's answer, which is validated anyway.
-- The CLI's own context (working directory, OS/shell, and with a subscription login your account e-mail) is
-  part of every conversation — see "What the model sees" above.
+- The CLI's own context (working directory, OS/shell, date, model identity, a token reminder, with a subscription
+  login your account e-mail, and with an app spending limit the remaining budget) is part of every conversation —
+  see "What the model sees" above.
 - Whether a user-level `CLAUDE.md` is excluded cannot be seen in the stream. With `--setting-sources ""`
   it should not load (it is tied to the `user` source); the measured input size (2 971 tokens for the
   system prompt, observation, schema and CLI scaffolding) is consistent with that, but it is not proof.
@@ -249,8 +264,10 @@ Summary: separate Python venv (`.venv-laya`), `pip install -r optional/laya/requ
 - Laya returns `answers.action = { choice, probabilities, confidence }`. The **adapter** maps the label:
   `skip` → skip; any other of the 13 labels → **one** bet on that category with **stake = the session
   minimum** (`limits.minStake`). **Laya only picks the category; the adapter fixes the stake.**
-- Explanation, e.g. `Laya classifier chose 'red' (p=0.31). Stake fixed at the session minimum by the adapter.`
-  The top label probabilities and routing are shown as a note.
+- Explanation, e.g. `Laya classifier chose 'red' (label probability 0.93, Laya confidence 0.85; raw, uncalibrated). Stake fixed at the session minimum by the adapter.`
+  A value Laya did not return is written as `label probability not reported` / `confidence not reported`
+  (never replaced by the other one); a `skip` has no stake sentence. The top label probabilities and routing are
+  shown as a note.
 - Unknown label or missing answer → `invalid_output`; never converted into another bet. A returned `stop`
   (not one of the 13 labels) is such an unknown label, so it is **invalid output** — never a stop, never a bet.
 - Usage: `inputTokens` = `usage.input_tokens`; **`outputTokens` = not applicable (null)** — a classifier

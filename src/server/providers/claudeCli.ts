@@ -682,18 +682,94 @@ function readTotals(r: CliResultEvent): CliTotals {
 }
 
 type Increase = { value: number | null; problem: string | null };
+type TotalKind = 'cost' | 'API time';
+
+/** A cost as written in a note: USD, at most 6 decimals (no float noise such as 0.018923000000000002). */
+function noteUsd(usd: number): string {
+  return `$${Number(usd.toFixed(6))}`;
+}
 
 /**
  * This run's share of a running total. `before` null = previous total unknown → unknown (never the
  * whole running total, which would over-count). A total below the previous one (zeroed values on a
  * crash/startup-error result, or a running total that restarted) is also unknown.
+ * The problem texts are short on purpose: they lead the stored note (see buildCliNote). Exported for tests.
  */
-function increase(now: number | null, before: number | null, what: string): Increase {
+export function turnIncrease(now: number | null, before: number | null, what: TotalKind): Increase {
   if (now === null) return { value: null, problem: null };
-  if (before === null) return { value: null, problem: `${what} unknown: the CLI reports a running total for the conversation and the previous total is not known` };
-  if (now < before) return { value: null, problem: `${what} unknown: the CLI's running total (${now}) is below the previous one (${before})` };
+  if (before === null) return { value: null, problem: `${what} unknown: previous CLI total not known` };
+  if (now < before) {
+    const fell = what === 'cost' ? `${noteUsd(before)} → ${noteUsd(now)}` : `${Math.round(before)} → ${Math.round(now)} ms`;
+    return { value: null, problem: `${what} unknown: CLI total fell ${fell}` };
+  }
   // Strip float noise from the subtraction (the CLI reports e.g. 0.018923000000000002).
   return { value: Number((now - before).toFixed(9)), problem: null };
+}
+
+/**
+ * Longest provider note the session runner stores: aiDecision.ts clips a note to
+ * MAX_PROVIDER_NOTE_CHARS (300). A number here because the session layer imports this module (via
+ * the provider registry); the test asserts that both stay equal.
+ */
+export const CLI_NOTE_MAX_CHARS = 300;
+
+/** What the note of one CLI run reports. Exported for tests. */
+export interface CliNoteFacts {
+  /** Why this turn's cost / API time is unknown (turnIncrease problems). Shown first. */
+  problems: string[];
+  /** A resumed attempt before this run ended without a result, and this run produced one. */
+  earlierAttemptWithoutResult: boolean;
+  apiRetries: number;
+  /** The maintained conversation (id prefix, this turn's number), or null for a stateless run. */
+  conversation: { id: string; turn: number; resumed: boolean } | null;
+  /** result.num_turns, or null when not reported. */
+  cliTurns: number | null;
+  /** This turn's API time and cost (for a resumed turn already the increase), null = unknown. */
+  apiMs: number | null;
+  costUsd: number | null;
+  /** The CLI's running conversation cost after this run (shown on a resumed turn with a known cost). */
+  conversationCostUsd: number | null;
+}
+
+/**
+ * The adapter's factual note for one run. Warnings come first (unknown figures, an earlier
+ * attempt's cost folded into this turn, API retries), then the facts. The phrases are short so that
+ * the longest combination fits CLI_NOTE_MAX_CHARS with room for long numbers; if extreme numbers
+ * still do not fit, whole trailing parts are left out instead of the storage limit cutting a
+ * sentence (and a warning) in the middle. Exported for tests.
+ */
+export function buildCliNote(f: CliNoteFacts, max = CLI_NOTE_MAX_CHARS): string | undefined {
+  const parts: string[] = [...f.problems];
+  if (f.earlierAttemptWithoutResult) parts.push('earlier attempt had no result; any cost the CLI recorded is included');
+  if (f.apiRetries > 0) parts.push(`CLI retried the API ${f.apiRetries}×`);
+  const resumed = f.conversation?.resumed === true;
+  if (f.conversation) {
+    const soFar = resumed && f.costUsd !== null && f.conversationCostUsd !== null ? `, cost so far ${noteUsd(f.conversationCostUsd)}` : '';
+    parts.push(`conversation ${f.conversation.id} turn ${f.conversation.turn} (${resumed ? 'resumed' : 'opened'}${soFar})`);
+  }
+  if (f.cliTurns !== null) parts.push(`CLI turns: ${f.cliTurns}`);
+  if (f.apiMs !== null) parts.push(`API time ${Math.round(f.apiMs)} ms (incl. first token)`);
+  if (resumed && (f.costUsd !== null || f.apiMs !== null)) {
+    // A resumed conversation reports running totals: the figures above are this turn's increase.
+    const subject =
+      f.costUsd !== null && f.apiMs !== null
+        ? 'cost (CLI estimate, not billing) and API time'
+        : f.costUsd !== null
+          ? 'cost (CLI estimate, not billing)'
+          : 'API time';
+    parts.push(`${subject}: this turn's increase`);
+  } else if (f.costUsd !== null) {
+    parts.push("cost is the CLI's own estimate, not billing");
+  }
+
+  let note = '';
+  for (const part of parts) {
+    const next = note === '' ? part : `${note}; ${part}`;
+    if (next.length > max) break;
+    note = next;
+  }
+  if (note === '' && parts.length > 0) note = (parts[0] ?? '').slice(0, max);
+  return note === '' ? undefined : note;
 }
 
 /**
@@ -1069,8 +1145,8 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
       // conversation's last known totals (read now, after the run, so an overlapping attempt counts once).
       const before: CliTotals = conv && resume ? conv.totals : ZERO_TOTALS;
       const none: Increase = { value: null, problem: null };
-      const cost = totals ? increase(totals.costUsd, before.costUsd, 'cost') : none;
-      const api = totals ? increase(totals.apiMs, before.apiMs, 'API time') : none;
+      const cost = totals ? turnIncrease(totals.costUsd, before.costUsd, 'cost') : none;
+      const api = totals ? turnIncrease(totals.apiMs, before.apiMs, 'API time') : none;
       const hadUnreportedAttempt = conv?.unreportedAttempt === true;
 
       // Advance the conversation only when the CLI produced a result for this turn. If the very first
@@ -1106,23 +1182,17 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
         finishReason: r && typeof r.subtype === 'string' ? r.subtype : null,
         rateLimit,
       };
-      const noteParts: string[] = [];
-      if (conv) noteParts.push(`conversation ${conv.cliSessionId.slice(0, 8)} turn ${turnNumber}${resume ? ' (resumed)' : ' (opened)'}`);
-      if (r && finiteNumber(r.num_turns) !== null) noteParts.push(`CLI turns: ${r.num_turns}`);
-      if (apiMs !== null) noteParts.push(`API time ${apiMs} ms (includes time to first token)`);
-      if (providerCostUsd !== null) noteParts.push("cost is the CLI's own estimate, not billing");
-      if (resume && (cost.value !== null || api.value !== null)) {
-        const total = totals?.costUsd;
-        noteParts.push(
-          `cost and API time are this turn's increase of the CLI's running conversation totals${typeof total === 'number' ? ` (conversation total so far $${Number(total.toFixed(6))})` : ''}`,
-        );
-      }
-      for (const problem of [cost.problem, api.problem]) if (problem) noteParts.push(problem);
-      if (resume && hadUnreportedAttempt && r) {
-        noteParts.push('an earlier attempt in this conversation ended without a result; any cost the CLI recorded for it is included in this increase');
-      }
-      if (st.apiRetries > 0) noteParts.push(`CLI retried the API ${st.apiRetries}×`);
-      const note = noteParts.length ? noteParts.join('; ') : undefined;
+      // Warnings first, and short enough to survive the 300-character note limit (see buildCliNote).
+      const note = buildCliNote({
+        problems: [cost.problem, api.problem].filter((p): p is string => p !== null),
+        earlierAttemptWithoutResult: resume && hadUnreportedAttempt && r !== null,
+        apiRetries: st.apiRetries,
+        conversation: conv ? { id: conv.cliSessionId.slice(0, 8), turn: turnNumber, resumed: resume } : null,
+        cliTurns: r ? finiteNumber(r.num_turns) : null,
+        apiMs,
+        costUsd: providerCostUsd,
+        conversationCostUsd: totals?.costUsd ?? null,
+      });
 
       // ── ordered outcome checks ──
       if (st.violation) {

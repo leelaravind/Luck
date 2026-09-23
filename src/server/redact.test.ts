@@ -10,9 +10,9 @@ describe('registered secrets', () => {
   });
 
   it('removes the longer secret whole when one secret contains another', () => {
-    registerSecret('abcd');
-    registerSecret('abcd-efgh-ijkl');
-    expect(redact('x abcd-efgh-ijkl y abcd')).toBe(`x ${REDACTED} y ${REDACTED}`);
+    registerSecret('fixture1');
+    registerSecret('fixture1-efgh-ijkl');
+    expect(redact('x fixture1-efgh-ijkl y fixture1')).toBe(`x ${REDACTED} y ${REDACTED}`);
   });
 
   it('handles values with regex/replacement special characters literally', () => {
@@ -26,6 +26,38 @@ describe('registered secrets', () => {
     registerSecret('   ');
     registerSecret('ab');
     expect(redact('ab cd')).toBe('ab cd');
+  });
+
+  it('ignores placeholder values shorter than 8 characters entirely (OPENAI_API_KEY=ollama, EMPTY, none)', () => {
+    for (const placeholder of ['ollama', 'EMPTY', 'none', 'fake', 'test123']) registerSecret(placeholder);
+    const text = 'kind ollama at http://127.0.0.1:11434/ollama/v1 — EMPTY none fake test123 OLLAMA Ollama';
+    expect(redact(text)).toBe(text);
+    // Encoded / JSON-escaped forms are not matched either.
+    expect(redact(JSON.stringify({ kind: 'ollama', note: 'EMPTY' }))).toBe('{"kind":"ollama","note":"EMPTY"}');
+  });
+
+  it('matches 8–15 character values with exact letter case only (plain and JSON-escaped, not URL-encoded)', () => {
+    registerSecret('lm-studio'); // 9 characters: LM Studio's documented placeholder key
+    expect(redact('key lm-studio here')).toBe(`key ${REDACTED} here`);
+    expect(redact('LM-Studio and LM-STUDIO are product names')).toBe('LM-Studio and LM-STUDIO are product names');
+
+    registerSecret('fx/te"st:15ch'); // 13 characters with characters that URL- and JSON-encode differently
+    expect(redact('raw fx/te"st:15ch')).toBe(`raw ${REDACTED}`);
+    expect(redact(JSON.stringify({ v: 'fx/te"st:15ch' }))).toBe(`{"v":"${REDACTED}"}`);
+    const encoded = encodeURIComponent('fx/te"st:15ch');
+    expect(redact(`q=${encoded}`)).toBe(`q=${encoded}`);
+    expect(redact('FX/TE"ST:15CH')).toBe('FX/TE"ST:15CH');
+  });
+
+  it('switches to case-insensitive and URL-encoded matching at exactly 16 characters', () => {
+    registerSecret('fixture-15-chars'); // 16
+    registerSecret('fixture/15chars'); // 15
+    expect('fixture-15-chars').toHaveLength(16);
+    expect('fixture/15chars').toHaveLength(15);
+    expect(redact('a FIXTURE-15-CHARS b')).toBe(`a ${REDACTED} b`);
+    expect(redact('a FIXTURE/15CHARS b')).toBe('a FIXTURE/15CHARS b');
+    expect(redact(`a ${encodeURIComponent('fixture/15chars')} b`)).toBe(`a ${encodeURIComponent('fixture/15chars')} b`);
+    expect(redact('a fixture/15chars b')).toBe(`a ${REDACTED} b`);
   });
 
   it('trims registered values', () => {
@@ -80,8 +112,106 @@ describe('key patterns (never registered)', () => {
     expect(redact(input)).toBe(expected);
   });
 
+  describe('JSON with escaped quotes (a JSON answer quoted inside rawOutput, audit #35)', () => {
+    const KEYS = ['access_token', 'refresh_token', 'id_token', 'api_key', 'apiKey', 'secret', 'client_secret', 'x-api-key'];
+
+    it.each(KEYS)('%s inside an escaped JSON string', (key) => {
+      const once = String.raw`{\"${key}\": \"fixture-value-0001\", \"n\": 1}`;
+      expect(redact(once)).toBe(String.raw`{\"${key}\": \"${REDACTED}\", \"n\": 1}`);
+      // Escaped twice (JSON inside JSON inside JSON).
+      const twice = String.raw`{\\\"${key}\\\":\\\"fixture-value-0002\\\"}`;
+      expect(redact(twice)).toBe(String.raw`{\\\"${key}\\\":\\\"${REDACTED}\\\"}`);
+    });
+
+    it.each([
+      ['bare credential', String.raw`{\"authorization\":\"fixture-auth-0003\"}`, String.raw`{\"authorization\":\"${REDACTED}\"}`],
+      ['Token scheme', String.raw`{\"Authorization\": \"Token fixture-tok-0004\"}`, String.raw`{\"Authorization\": \"Token ${REDACTED}\"}`],
+      ['Bearer scheme', String.raw`{\"Authorization\":\"Bearer fixture.bearer-0005\"}`, String.raw`{\"Authorization\":\"Bearer ${REDACTED}\"}`],
+    ])('authorization inside an escaped JSON string: %s', (_name, input, expected) => {
+      expect(redact(input)).toBe(expected);
+    });
+
+    it('masks the token in a stored rawOutput and keeps it valid JSON (end-to-end shape from the audit)', () => {
+      const answer = { action: 'skip', explanation: 'I found {"access_token": "acc3ssT0kenVal-fixture", "refresh_token": "rt-fixture-9"} in my context' };
+      const rawOutput = JSON.stringify(answer);
+      expect(rawOutput).toContain(String.raw`{\"access_token\": \"acc3ssT0kenVal-fixture\"`);
+      const masked = redact(rawOutput);
+      expect(masked).not.toContain('acc3ssT0kenVal');
+      expect(masked).not.toContain('rt-fixture-9');
+      const parsed = JSON.parse(masked) as typeof answer;
+      expect(parsed.explanation).toBe(`I found {"access_token": "${REDACTED}", "refresh_token": "${REDACTED}"} in my context`);
+      // And once more as a string field of an outer JSON document (the export).
+      const outer = JSON.stringify({ rawOutput });
+      expect(JSON.parse(redact(outer))).toEqual({ rawOutput: masked });
+    });
+
+    it('never swallows an escaped closing quote (query values, x-api-key, generic values)', () => {
+      expect(redact(String.raw`\"see https://x.test/a?key=fixture123\" ok`)).toBe(String.raw`\"see https://x.test/a?key=${REDACTED}\" ok`);
+      expect(redact(String.raw`{\"note\":\"x-api-key: fixture-abc\n\\\"q\\\"\"}`)).toBe(String.raw`{\"note\":\"x-api-key: ${REDACTED}\n\\\"q\\\"\"}`);
+      expect(redact(String.raw`password=fixture-pw\"y`)).toBe(String.raw`password=${REDACTED}\"y`);
+      // A backslash that does not start an escape is part of the value (masked, not leaked).
+      expect(redact(String.raw`secret=fixture\part2 next`)).toBe(`secret=${REDACTED} next`);
+    });
+
+    it('finds keys right after an escaped newline or tab inside a JSON string', () => {
+      expect(redact(String.raw`"line1\nAuthorization: Token fixture-tok-6"`)).toBe(String.raw`"line1\nAuthorization: Token ${REDACTED}"`);
+      expect(redact(String.raw`"line1\nid_token=fixture-idt-7"`)).toBe(String.raw`"line1\nid_token=${REDACTED}"`);
+      expect(redact(String.raw`"line1\tBearer fixture-bearer-8"`)).toBe(String.raw`"line1\tBearer ${REDACTED}"`);
+      expect(redact(String.raw`"line1\nsk-fixture-0000000000test"`)).toBe(String.raw`"line1\n${REDACTED}"`);
+    });
+  });
+
+  describe('Authorization: Digest (whole parameter list masked)', () => {
+    it('masks every parameter, including the response hash, and keeps the scheme name', () => {
+      const header =
+        'Authorization: Digest username="fixture-user", realm="fixture realm", nonce="fixture-nonce", uri="/x", qop=auth, nc=00000001, cnonce="fixture-cnonce", response="fixture-response-hash-0001", opaque="fixture-opaque"';
+      const out = redact(header);
+      expect(out).toBe(`Authorization: Digest ${REDACTED}`);
+      expect(out).not.toContain('fixture-response-hash');
+      expect(out).not.toContain('fixture-user');
+    });
+
+    it('keeps the text after the header and JSON around it intact', () => {
+      expect(redact('Authorization: Digest username="u", response="fixture-hash"\r\nHost: x.test')).toBe(`Authorization: Digest ${REDACTED}\r\nHost: x.test`);
+      const json = JSON.stringify({ Authorization: 'Digest username="u", response="fixture-hash"', other: 1 });
+      const masked = redact(json);
+      expect(JSON.parse(masked)).toEqual({ Authorization: `Digest ${REDACTED}`, other: 1 });
+      const nested = JSON.stringify({ rawOutput: json });
+      expect(JSON.parse(redact(nested))).toEqual({ rawOutput: masked });
+    });
+  });
+
+  it('stays fast on pathological input (no catastrophic backtracking)', () => {
+    const n = 100_000;
+    const inputs = [
+      `authorization: Digest ${'a=b '.repeat(n)}`,
+      `authorization: Digest ${'a="'.repeat(n)}`,
+      `authorization: Digest a=${'\\'.repeat(n)}`,
+      `Authorization: Digest ${'a=\\\\\\"x, '.repeat(n)}`,
+      `api_key${'\\'.repeat(n)}`,
+      `api_key:${'\\'.repeat(n)}x`,
+      '\\n'.repeat(n),
+      `secret=${'\\"'.repeat(n)}`,
+      `?key=${'\\x'.repeat(n)}`,
+      '{\\"access_token\\": '.repeat(n / 10),
+    ];
+    for (const input of inputs) {
+      const start = performance.now();
+      redact(input);
+      expect(performance.now() - start).toBeLessThan(2_000);
+    }
+  });
+
   it('is idempotent on already-masked text', () => {
-    for (const s of ['Authorization: Bearer abc.def', 'Authorization: Token abc', '{"access_token":"abc"}', 'x?token=abc&y=1']) {
+    for (const s of [
+      'Authorization: Bearer abc.def',
+      'Authorization: Token abc',
+      '{"access_token":"abc"}',
+      'x?token=abc&y=1',
+      String.raw`{\"access_token\": \"fixture-idem\"}`,
+      'Authorization: Digest username="u", response="fixture-hash"',
+      String.raw`{\"Authorization\":\"Digest username=\\\"u\\\", response=\\\"h\\\"\"}`,
+    ]) {
       const once = redact(s);
       expect(redact(once)).toBe(once);
     }

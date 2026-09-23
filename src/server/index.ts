@@ -16,6 +16,11 @@
  * keeps waiting for file changes when the server exits, so without this check a busy port would
  * leave the web UI running against whatever other program owns that port; with it, the dev
  * runner (concurrently -k) sees the failure and stops the web UI too.
+ *
+ * `--dev-runner` (passed only by the `dev:server` script, i.e. `npm run dev`): the Vite dev server is started
+ * next to this process, so the startup message points to the web UI on LUCK_WEB_PORT. Without it (the server
+ * started directly, e.g. `node dist/server/server/index.js` or `tsx src/server/index.ts`) nothing guarantees that
+ * Vite is running, so the message never sends you there.
  */
 import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -72,9 +77,13 @@ function printPortInUse(config: AppConfig): void {
   logError(`  open .env and set LUCK_PORT to another number (for example LUCK_PORT=${config.port + 10}), then start again.`);
 }
 
-/** True when started by the development runner (`npm run dev`), not with --production. */
+/**
+ * True only when started by the development runner (`npm run dev` → the `dev:server` script passes
+ * `--dev-runner`), which also starts the Vite dev server. An explicit argument, not NODE_ENV: a direct start
+ * without --production is development mode too, but has no Vite dev server.
+ */
 function isDevRunner(): boolean {
-  return process.env.NODE_ENV !== 'production';
+  return process.argv.includes('--dev-runner');
 }
 
 /** Steps 2–3: .env, --production, loadConfig. Prints a readable message and returns null on bad values. */
@@ -175,16 +184,21 @@ async function main(): Promise<void> {
 
   const url = browserUrl(config.host, config.port);
   const webUiUrl = config.devOrigins[0];
+  const webBuild = hasWebBuild(config.webDistDir);
   if (config.isDev && isDevRunner() && webUiUrl) {
-    // Development: the UI is served by Vite on LUCK_WEB_PORT; this port is only the API.
+    // `npm run dev`: the UI is served by Vite on LUCK_WEB_PORT; this port is only the API.
     log(`Luck API server is running at ${url} (development mode).`);
     log(`Open ${webUiUrl} in your browser (the web UI with hot reload, started by "npm run dev").`);
-    if (hasWebBuild(config.webDistDir)) {
-      log(`Note: ${url} also serves an OLDER production build from dist/web. Use ${webUiUrl} while developing.`);
+    if (webBuild) {
+      log(`Note: ${url} also serves a production build from dist/web (may be out of date). Use ${webUiUrl} while developing.`);
     }
-  } else if (hasWebBuild(config.webDistDir)) {
+  } else if (webBuild) {
     log(`Luck is running at ${url}`);
     log(`Open ${url} in your browser.`);
+    if (config.isDev) {
+      // Started directly without --production: no Vite dev server was started, so never point to it.
+      log(`Note: development mode without "npm run dev" — ${url} serves a production build from dist/web (may be out of date).`);
+    }
   } else {
     log(`Luck API server is running at ${url}`);
     log('No built frontend found in dist/web. Run "npm start" (it builds first) or "npm run build".');

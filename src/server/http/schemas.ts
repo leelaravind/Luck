@@ -85,15 +85,23 @@ export const controlBody = z.strictObject({ action: z.enum(CONTROL_ACTIONS) });
 /** Body of POST /api/providers/:kind/test and /models. The whole body is optional. */
 export const providerBody = z.strictObject({ player: playerConfigSchema.optional() }).optional();
 
-/** Partial<AppSettings>. Nested objects are type-checked; the service validates values. */
+/** Most keys accepted in pricingRemove / builtInPricingKeys. */
+const MAX_PRICING_KEYS = 1_000;
+const pricingKey = z.string().min(1).max(300);
+
+/** AppSettingsPatch. Nested objects are type-checked; the service validates values. */
 export const settingsPatchBody = z.strictObject({
   defaultLimits: sessionLimitsSchema.optional(),
   animationSpeed: z.enum(['normal', 'fast', 'instant']).optional(),
   /** Server wait between autonomous rounds in ms (0..600000); independent of animationSpeed. */
   roundPacingMs: z.number().int().min(0).max(600_000).optional(),
   reduceMotion: z.enum(['system', 'on', 'off']).optional(),
-  /** The complete map of the user's pricing entries (omitted user entries are deleted). */
-  pricing: z.record(z.string().max(300), pricingSchema).optional(),
+  /** Pricing entries, MERGED key by key into the stored ones (rows not sent are kept). */
+  pricing: z.record(pricingKey, pricingSchema).optional(),
+  /** Pricing keys to delete — the only way to delete a row. Built-in default keys are refused by the service. */
+  pricingRemove: z.array(pricingKey).max(MAX_PRICING_KEYS).optional(),
+  /** Read-only, filled by the server: accepted (so settings can be sent back as received) and ignored. */
+  builtInPricingKeys: z.array(z.string().max(300)).max(MAX_PRICING_KEYS).optional(),
   players: z.partialRecord(z.enum(AI_KINDS), playerConfigSchema).optional(),
 });
 

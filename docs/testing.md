@@ -13,8 +13,10 @@ npx vitest run tests/security              # HTTP + Vite dev-server security, se
 npx vitest run tests/e2e/manual-session.test.ts   # one file
 npm run typecheck                          # tsc for the web/test project and the server project
 node scripts/secret-scan.mjs               # pre-commit secret scan of this repository (exit 1 on findings)
-                                           # (also: npm run secret-scan; outside a git repository it
-                                           #  prints a notice and walks the folder, honouring .gitignore)
+                                           # (also: npm run secret-scan; outside a git repository, in a
+                                           #  folder another repository ignores or does not track, or when
+                                           #  git lists no files, it prints a notice and walks the folder,
+                                           #  honouring .gitignore)
 gitleaks git . --config .gitleaks.toml     # optional, if gitleaks is installed: full-history scan, as CI runs it
 ```
 
@@ -29,7 +31,8 @@ $env:npm_config_cache = "$PWD\tmp\npm-cache"
 ```
 
 `tmp/` is gitignored. The e2e and security suites write their SQLite files and fixtures to `tmp/10/` (the Vite
-dev-server test to `tmp/vite-dev-<uuid>/`) and delete them afterwards. They never write outside the repository.
+dev-server test to `tmp/vite-dev-<uuid>/`, the startup-message test to `tmp/startup-banner-<uuid>/`) and delete
+them afterwards. They never write outside the repository.
 
 Tests that need a real socket (SSE, raw `Host` headers, the Vite dev server) listen on an **ephemeral port** (the OS
 picks a free port). They never use 3717 or 5717, so they can run while `npm run dev` is running. The Vite test uses its
@@ -132,13 +135,17 @@ docs and `.git` → `403`; no `Access-Control-Allow-Origin` for another local or
 itself (`index.html`, `/main.tsx`, the `src/shared` modules it imports, `/@vite/client`) is still served with the dev
 headers. A second part runs Vite's own matcher (`isFileLoadingAllowed`) for checkouts in awkward folders
 (`/tmp/Luck`, `/Data/Luck`, `Projects (old)`, `[lab]`, `{a,b}`): app files stay allowed, data/tmp/database/`.env`/`.git`
-stay denied.
+stay denied. So that it is stable while the full suite loads the machine, `beforeAll` warms the server up (it
+requests `/`, `/main.tsx`, `/@vite/client` and a `src/shared` module once, so the tests hit already-transformed
+modules), every test has an explicit timeout (120 s for the HTTP tests), and each request uses a fresh connection.
 
 ### `tests/security/secret-scan.test.ts` and `scripts/secret-scan.mjs`
 The scanner lists files with `git ls-files --cached --others --exclude-standard` (what a commit could publish).
-When the folder is not a git repository (a ZIP download) or git is not installed, it prints a notice and falls
-back to its walk mode (`--no-git`), which skips `.git/` and `node_modules/` and honours every `.gitignore` in the
-tree the way git does. It flags Anthropic / `sk-` style / GitHub / AWS / Slack keys, PEM private keys, generic
+When git's list does not describe the folder, it prints a notice and falls back to its walk mode (`--no-git`), which
+skips `.git/` and `node_modules/` and honours every `.gitignore` in the tree the way git does: the folder is not a
+git repository (a ZIP download) or git is not installed; the folder sits inside another repository that ignores it
+(e.g. a ZIP unpacked under that repository's ignored `tmp/`, where git would list nothing and the scan would read
+"clean — 0 files") or tracks none of its files; or git lists no files at all. It flags Anthropic / `sk-` style / GitHub / AWS / Slack keys, PEM private keys, generic
 `api_key = '<long random>'` assignments, and forbidden files (`.env*` except `.env.example`, SQLite files and their
 `-wal`/`-shm`/`-journal` files, `*.pem`/`*.key`/`*.p12`/`*.pfx`, `client_secret*.json`, `credentials*.json`, SSH
 keys, model weights `*.safetensors`/`*.gguf`/`*.pt`/`*.pth`/`*.ckpt`/`*.onnx`/`*.h5`). Output is always redacted. The
@@ -146,8 +153,15 @@ test plants one secret per rule in a throw-away fixture (assembled at runtime so
 checks placeholders/hand-written fakes/suppressed lines are not flagged, checks redaction and exit codes, checks
 the `.gitignore` handling (negation, anchoring, `**`, nested `.gitignore` files — compared with `git ls-files` in a
 throw-away repository), runs the scanner outside any git repository and without git on `PATH` (fallback with a
-notice, still finds secrets), and runs it over this repository (git mode in a clone, walk mode in a ZIP
+notice, still finds secrets), in a folder under this repository's ignored `tmp/`, in the ignored / untracked /
+tracked folders of a throw-away enclosing repository and in a repository whose local exclude file hides every file
+(walk mode with a notice and the planted secret found; a tracked folder keeps git mode), and runs it over this repository (git mode in a clone, walk mode in a ZIP
 download), which must be clean; in a clone the walk-mode file list must equal git's.
+
+Allow-listed by the scanner: `sk-ant-test-SECRET123`, placeholders (`xxxx`, `<…>`, `your-key`, `changeme` …), generic
+assignments in `.env.example`, lines marked `secret-scan:allow`, and obviously hand-written values (marker words
+such as `test`/`fixture`, words-only key bodies, `123456`/`abcdef` runs). Binary files and files over 2 MiB are
+not content-scanned (their names are).
 
 ### `tests/security/repo-hygiene.test.ts`
 `.gitignore` covers local data (SQLite files and journals), credentials (keys, certificates, SSH keys, `.npmrc`),
@@ -155,10 +169,18 @@ Python environments and model weights (checked with the scanner's matcher and, w
 `git check-ignore --no-index`). The Stitch exports in `design-references/` equal the owner's originals (sha256), the
 `.gitattributes` rule for them comes after `* text=auto`, and `git check-attr` reports `text: unset` for them.
 
-Allow-listed: `sk-ant-test-SECRET123`, placeholders (`xxxx`, `<…>`, `your-key`, `changeme` …), generic
-assignments in `.env.example`, lines marked `secret-scan:allow`, and obviously hand-written values (marker words
-such as `test`/`fixture`, words-only key bodies, `123456`/`abcdef` runs). Binary files and files over 2 MiB are
-not content-scanned (their names are).
+### `tests/security/node-engines.test.ts`
+The supported Node.js range `^22.22.2 || ^24.15.0 || >=26.0.0` (the test tools' own range) is the same in
+`package.json`, the root entry of `package-lock.json`, the README and `docs/troubleshooting.md`. The version checks
+of both start scripts are executed with fake versions — the `node -e` snippet of `start.sh` with a stub `process`,
+the `start.ps1` lines in PowerShell (skipped when no PowerShell is installed) — and accept 22.22.2+, 24.15+ and 26+
+while refusing older 22.x / 24.x releases and 23.x / 25.x.
+
+### `src/server/index.test.ts` — startup message
+Starts the real entry point (`node --import tsx src/server/index.ts`) on ephemeral ports with a throw-away data
+folder. Only with `--dev-runner` (passed by the `dev:server` script of `npm run dev`) does it point to the Vite web
+UI on `LUCK_WEB_PORT`; a direct start without `--production` never mentions that URL and, when `dist/web` has a build,
+says it serves "a production build from dist/web (may be out of date)".
 
 ## Known failures
 

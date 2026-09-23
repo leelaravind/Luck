@@ -14,6 +14,8 @@ import {
   formatMicrosUsd,
   formatSubunitsDecimal,
   neutraliseFormula,
+  redactExport,
+  redactUrl,
   toCsvExport,
   toJsonExport,
 } from './export.js';
@@ -290,7 +292,7 @@ describe('exports contain only what was stored — no secrets, config or env', (
   });
 });
 
-describe('final redact() pass over exports (audit #33)', () => {
+describe('export masking of free-text fields (audit #33)', () => {
   // A registered secret that matches no key PATTERN: only the exact-value layer can catch it.
   const REGISTERED = 'fixture-registered-value-9c1e77';
   afterEach(() => clearRegisteredSecrets());
@@ -330,9 +332,14 @@ describe('final redact() pass over exports (audit #33)', () => {
     expect(parsed.session.player.model).toBe('model-[redacted]');
     expect(parsed.usage[0]!.model).toBe('[redacted]');
     expect(parsed.logs[0]!.message).toBe('provider echoed [redacted]');
+    // The raw output is still valid JSON after masking (the escaped quotes around it survive).
+    expect(JSON.parse(parsed.decisions[0]!.rawOutput!)).toEqual({ action: 'bet', explanation: 'key [redacted]', note: 'x-api-key: [redacted]\n"q"' });
     // Everything else is untouched.
     expect(parsed.rounds).toEqual(exp.rounds);
     expect(parsed.ledger).toEqual(exp.ledger);
+    // The input export object is not mutated.
+    expect(exp.decisions[0]!.explanation).toContain(REGISTERED);
+    expect(exp.session.player.model).toBe(`model-${REGISTERED}`);
   });
 
   it('masks a registered secret in the CSV and keeps every row and cell in place', () => {
@@ -370,6 +377,173 @@ describe('final redact() pass over exports (audit #33)', () => {
     const parsed = JSON.parse(json) as { decisions: { rawOutput: string }[] };
     expect(parsed.decisions[0]!.rawOutput).not.toContain('hunter2');
     expect(parsed.decisions[0]!.rawOutput).toContain('[redacted]');
+  });
+
+  it('masks a token inside JSON quoted in the stored rawOutput (escaped quotes, audit #35)', () => {
+    const r = repo();
+    r.createSession(newSession('s1', { mode: 'ai', player: { kind: 'ollama', model: 'fixture-model' } }));
+    // The model's JSON answer quoted a JSON object: rawOutput holds {\"access_token\": \"…\"}.
+    const rawOutput = JSON.stringify({ action: 'skip', explanation: 'context had {"access_token": "acc3ssT0kenVal-fixture"}' });
+    r.insertDecision(decision('s1', 'd1', { status: 'accepted', action: 'skip', rawOutput, explanation: 'context had [redacted]' }));
+    const json = toJsonExport(r.exportSession('s1'));
+    expect(json).not.toContain('acc3ssT0kenVal');
+    const parsed = JSON.parse(json) as { decisions: { rawOutput: string }[] };
+    expect(JSON.parse(parsed.decisions[0]!.rawOutput)).toEqual({ action: 'skip', explanation: 'context had {"access_token": "[redacted]"}' });
+  });
+});
+
+describe('export masking never corrupts structured fields (short placeholder keys, round-2 regression)', () => {
+  afterEach(() => clearRegisteredSecrets());
+
+  /** An Ollama session exported while OPENAI_API_KEY=ollama (Ollama's documented placeholder) is registered. */
+  function ollamaSession(r: Repository, explanation: string) {
+    r.createSession(
+      newSession('s1', {
+        name: 'ollama fixture run',
+        mode: 'ai',
+        player: { kind: 'ollama', model: 'fake:latest', baseUrl: 'http://127.0.0.1:4939/ollama' },
+      }),
+    );
+    r.insertDecision(decision('s1', 'd1', { status: 'accepted', action: 'bet', bets: [{ type: 'red', stake: 100 }], explanation, providerKind: 'ollama', startedAt: at(1) }));
+    r.insertUsage(usage('s1', 'd1', 'u1', { providerKind: 'ollama', model: 'fake:latest', costBasis: 'local-no-charge', costMicros: 0 }));
+    playAiRound(r, 'r1', 'd1', 2);
+    r.appendLog('s1', 'info', 'provider', 'ollama answered in 1.2 s');
+  }
+
+  it('OPENAI_API_KEY=ollama: kind, providerKind, baseUrl and every other field are exported exactly', () => {
+    registerSecret('ollama');
+    const r = repo();
+    ollamaSession(r, 'ollama says red');
+    const exp = r.exportSession('s1');
+    const parsed = JSON.parse(toJsonExport(exp)) as typeof exp;
+    expect(parsed.session.player).toEqual({ kind: 'ollama', model: 'fake:latest', baseUrl: 'http://127.0.0.1:4939/ollama' });
+    expect(parsed.usage[0]!.providerKind).toBe('ollama');
+    expect(parsed.decisions[0]!.providerKind).toBe('ollama');
+    expect(parsed.decisions[0]!.explanation).toBe('ollama says red');
+    expect(parsed.logs[0]!.message).toBe('ollama answered in 1.2 s');
+    expect(parsed).toEqual(exp); // nothing at all was masked
+
+    const csv = toCsvExport(exp);
+    expect(csv).not.toContain('[redacted]');
+    const row = Object.fromEntries(CSV_COLUMNS.map((c, i) => [c, parseCsv(csv)[1]![i]]));
+    expect(row).toMatchObject({ decision_explanation: 'ollama says red', decision_cost_basis: 'local-no-charge' });
+  });
+
+  it('a long fake secret inside an explanation is still masked, in JSON and CSV', () => {
+    const LONG = 'fixture-long-secret-value-0042';
+    registerSecret('ollama');
+    registerSecret(LONG);
+    const r = repo();
+    ollamaSession(r, `echoed ${LONG} and ${LONG.toUpperCase()}; ollama bets red`);
+    const exp = r.exportSession('s1');
+    const json = toJsonExport(exp);
+    const csv = toCsvExport(exp);
+    for (const out of [json, csv]) expect(out.toLowerCase()).not.toContain(LONG);
+    const parsed = JSON.parse(json) as typeof exp;
+    expect(parsed.decisions[0]!.explanation).toBe('echoed [redacted] and [redacted]; ollama bets red');
+    expect(parsed.session.player.kind).toBe('ollama');
+    expect(parsed.session.player.baseUrl).toBe('http://127.0.0.1:4939/ollama');
+    const row = Object.fromEntries(CSV_COLUMNS.map((c, i) => [c, parseCsv(csv)[1]![i]]));
+    expect(row.decision_explanation).toBe('echoed [redacted] and [redacted]; ollama bets red');
+  });
+
+  it('never masks ids, enums, timestamps, bet labels or a URL host/path, even when they equal a registered value', () => {
+    // Registered values that collide with structured data (contrived on purpose): an id, an enum
+    // value, a host name and a path segment. Only free text and the URL query may be masked.
+    const ID = 'fixture-decision-id-01';
+    for (const v of [ID, 'estimated-from-pricing', 'fixture-proxy-host', 'fixture-path-part']) registerSecret(v);
+    const r = repo();
+    r.createSession(
+      newSession('s1', {
+        mode: 'ai',
+        player: { kind: 'openai', model: 'fixture-model', baseUrl: 'http://fixture-proxy-host:8080/fixture-path-part/v1?key=fixture-query-key' },
+      }),
+    );
+    r.insertDecision(decision('s1', ID, { status: 'accepted', action: 'bet', providerKind: 'openai', explanation: `id ${ID} via fixture-proxy-host`, startedAt: at(1) }));
+    r.insertUsage(usage('s1', ID, 'u1', { providerKind: 'openai', costMicros: 12, costBasis: 'estimated-from-pricing' }));
+    playAiRound(r, 'r1', ID, 2);
+    const exp = r.exportSession('s1');
+    const parsed = JSON.parse(toJsonExport(exp)) as typeof exp;
+    expect(parsed.decisions[0]!.id).toBe(ID);
+    expect(parsed.usage[0]!.decisionId).toBe(ID);
+    expect(parsed.usage[0]!.costBasis).toBe('estimated-from-pricing');
+    expect(parsed.rounds).toEqual(exp.rounds);
+    expect(parsed.rounds[0]!.decisionId).toBe(ID);
+    expect(parsed.ledger).toEqual(exp.ledger);
+    expect(parsed.session.player.baseUrl).toBe('http://fixture-proxy-host:8080/fixture-path-part/v1?key=[redacted]');
+    expect(parsed.decisions[0]!.explanation).toBe('id [redacted] via [redacted]');
+
+    const row = Object.fromEntries(CSV_COLUMNS.map((c, i) => [c, parseCsv(toCsvExport(exp))[1]![i]]));
+    expect(row).toMatchObject({ decision_cost_basis: 'estimated-from-pricing', status: 'settled', source: 'ai', decision_explanation: 'id [redacted] via [redacted]' });
+  });
+});
+
+describe('redactUrl', () => {
+  afterEach(() => clearRegisteredSecrets());
+
+  it('keeps scheme, host, port and path; masks user info and credential query parameters', () => {
+    expect(redactUrl('http://127.0.0.1:11434')).toBe('http://127.0.0.1:11434');
+    expect(redactUrl('https://api.example.test/v1/')).toBe('https://api.example.test/v1/');
+    expect(redactUrl('https://user:fixture-pass@h.test/p')).toBe('https://[redacted]@h.test/p');
+    expect(redactUrl('https://h.test/p?api-version=2024-01-01&api_key=fixture-q#frag')).toBe('https://h.test/p?api-version=2024-01-01&api_key=[redacted]#frag');
+    // "@" inside the path is not user info.
+    expect(redactUrl('https://h.test/users/@me')).toBe('https://h.test/users/@me');
+  });
+
+  it('masks a registered value in the query but never in the host or path', () => {
+    registerSecret('fixture-url-secret-77');
+    expect(redactUrl('http://fixture-url-secret-77.test/fixture-url-secret-77?q=fixture-url-secret-77')).toBe(
+      'http://fixture-url-secret-77.test/fixture-url-secret-77?q=[redacted]',
+    );
+  });
+});
+
+describe('redactExport', () => {
+  it('returns the same data when nothing looks like a secret and does not mutate its input', () => {
+    const r = repo();
+    seededSession(r);
+    r.insertUsage(usage('s1', 'd1', 'u1'));
+    r.appendLog('s1', 'info', 'round', 'Round 1 settled');
+    const exp = r.exportSession('s1');
+    const snapshot = JSON.parse(JSON.stringify(exp)) as typeof exp;
+    expect(redactExport(exp)).toEqual(exp);
+    expect(exp).toEqual(snapshot);
+  });
+
+  it('masks every free-text field of a decision, the session name/message and log messages', () => {
+    const K = 'sk-fixture-000000000000test';
+    const r = repo();
+    r.createSession(newSession('s1', { name: `run ${K}`, mode: 'ai', player: { kind: 'openai', model: `m ${K}` } }));
+    r.updateSession('s1', { message: `failed: ${K}` });
+    r.insertDecision(
+      decision('s1', 'd1', {
+        status: 'invalid',
+        model: `echo ${K}`,
+        explanation: `e ${K}`,
+        rawOutput: `r ${K}`,
+        errorMessage: `m ${K}`,
+        validationErrors: [`v ${K}`, 'plain'],
+        providerNote: `n ${K}`,
+      }),
+    );
+    r.insertUsage(usage('s1', 'd1', 'u1', { model: `u ${K}` }));
+    r.appendLog('s1', 'error', 'provider', `log ${K}`);
+    const out = redactExport(r.exportSession('s1'));
+    expect(JSON.stringify(out)).not.toContain(K);
+    expect(out.session.name).toBe('run [redacted]');
+    expect(out.session.message).toBe('failed: [redacted]');
+    expect(out.session.player).toEqual({ kind: 'openai', model: 'm [redacted]' });
+    const d = out.decisions[0]!;
+    expect([d.model, d.explanation, d.rawOutput, d.errorMessage, d.providerNote]).toEqual([
+      'echo [redacted]',
+      'e [redacted]',
+      'r [redacted]',
+      'm [redacted]',
+      'n [redacted]',
+    ]);
+    expect(d.validationErrors).toEqual(['v [redacted]', 'plain']);
+    expect(out.usage[0]!.model).toBe('u [redacted]');
+    expect(out.logs[0]!.message).toBe('log [redacted]');
   });
 });
 

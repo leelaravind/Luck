@@ -2,11 +2,19 @@
  * Settings editor state: default limits for new sessions, presentation preferences, the pause between
  * autonomous rounds and per-model pricing assumptions. Pricing is only ever used for ESTIMATED cost and is
  * always labelled as an assumption.
+ *
+ * The save patch (AppSettingsPatch) carries only what the user changed in this form, so a tab whose copy
+ * of the settings is older than the server's cannot overwrite values it never touched:
+ *  - defaultLimits / animationSpeed / reduceMotion / roundPacingMs: sent only when they differ from the
+ *    loaded server value;
+ *  - pricing: only the rows edited or added here (the server MERGES them key by key);
+ *  - pricingRemove: the keys removed here that the server listed, plus built-in keys whose user override is
+ *    being reset ("Reset to default"); a built-in default itself is never deleted.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { AnimationSpeed, AppSettings, Pricing } from '../../shared/contracts';
+import type { AnimationSpeed, AppSettings, AppSettingsPatch, Pricing } from '../../shared/contracts';
 import { DEFAULT_LIMITS } from '../../shared/contracts';
-import { useLimitsForm } from './useLimitsForm';
+import { limitsToValues, useLimitsForm, type LimitField } from './useLimitsForm';
 
 export interface PricingRow {
   /** `${kind}:${model}` */
@@ -17,15 +25,23 @@ export interface PricingRow {
   cacheWrite: string;
   source: Pricing['source'];
   asOf: string;
+  /**
+   * A built-in default pricing key (AppSettings.builtInPricingKeys): it cannot be removed, only reset to the
+   * default when the user overrode it. Every other row can be removed, whatever its `source`.
+   */
+  builtIn: boolean;
   /** Edited in this form (source becomes 'user' on save). */
   dirty: boolean;
+  /** A built-in row whose user override will be dropped on save (it returns to the built-in default). */
+  resetPending?: boolean;
 }
 
 function num(n: number | undefined): string {
   return n === undefined ? '' : String(n);
 }
 
-export function pricingToRows(pricing: Record<string, Pricing>): PricingRow[] {
+export function pricingToRows(pricing: Record<string, Pricing>, builtInKeys: readonly string[] = []): PricingRow[] {
+  const builtIn = new Set(builtInKeys);
   return Object.entries(pricing)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, p]) => ({
@@ -36,6 +52,7 @@ export function pricingToRows(pricing: Record<string, Pricing>): PricingRow[] {
       cacheWrite: num(p.cacheWritePerMTokUsd),
       source: p.source,
       asOf: p.asOf ?? '',
+      builtIn: builtIn.has(key),
       dirty: false,
     }));
 }
@@ -98,15 +115,21 @@ export function rowsToPricing(rows: readonly PricingRow[], today: string): { pri
   return { pricing, errors };
 }
 
+const NO_KEYS: readonly string[] = [];
+
 export function useSettingsForm(settings: AppSettings | null) {
-  const limitsForm = useLimitsForm(settings?.defaultLimits ?? DEFAULT_LIMITS);
+  const serverLimits = settings?.defaultLimits ?? DEFAULT_LIMITS;
+  const limitsForm = useLimitsForm(serverLimits);
   const [animationSpeed, setAnimationSpeed] = useState<AnimationSpeed>(settings?.animationSpeed ?? 'normal');
   const [reduceMotion, setReduceMotion] = useState<AppSettings['reduceMotion']>(settings?.reduceMotion ?? 'system');
   const serverPacingMs = settings?.roundPacingMs ?? DEFAULT_ROUND_PACING_MS;
   const [pacingSec, setPacingSec] = useState(() => pacingToInput(serverPacingMs));
-  const [rows, setRows] = useState<PricingRow[]>(() => pricingToRows(settings?.pricing ?? {}));
+  const builtInKeys = settings?.builtInPricingKeys ?? NO_KEYS;
+  const [rows, setRows] = useState<PricingRow[]>(() => pricingToRows(settings?.pricing ?? {}, builtInKeys));
+  /** Keys removed in this form since the settings were last loaded (sent as `pricingRemove`). */
+  const [removed, setRemoved] = useState<readonly string[]>(NO_KEYS);
 
-  // Re-sync when the server's settings change (e.g. after a save or first load).
+  // Re-sync when the server's settings change (after a save, the first load or a refresh).
   const { reset } = limitsForm;
   useEffect(() => {
     if (!settings) return;
@@ -114,38 +137,88 @@ export function useSettingsForm(settings: AppSettings | null) {
     setAnimationSpeed(settings.animationSpeed);
     setReduceMotion(settings.reduceMotion);
     setPacingSec(pacingToInput(settings.roundPacingMs ?? DEFAULT_ROUND_PACING_MS));
-    setRows(pricingToRows(settings.pricing ?? {}));
+    setRows(pricingToRows(settings.pricing ?? {}, settings.builtInPricingKeys ?? NO_KEYS));
+    setRemoved(NO_KEYS);
   }, [settings, reset]);
 
-  const updateRow = useCallback((key: string, field: keyof Omit<PricingRow, 'key' | 'dirty' | 'source' | 'asOf'>, value: string) => {
-    setRows((rs) => rs.map((r) => (r.key === key ? { ...r, [field]: value, dirty: true } : r)));
-  }, []);
-  const addRow = useCallback((key: string) => {
-    setRows((rs) =>
-      rs.some((r) => r.key === key)
-        ? rs
-        : [...rs, { key, input: '', output: '', cacheRead: '', cacheWrite: '', source: 'user', asOf: '', dirty: true }],
-    );
-  }, []);
-  /** Only user entries can be removed; default assumptions always come back from the server. */
+  const updateRow = useCallback((key: string, field: 'input' | 'output' | 'cacheRead' | 'cacheWrite', value: string) => {
+    // Editing a row cancels a pending "Reset to default" for it.
+    setRows((rs) => rs.map((r) => (r.key === key ? { ...r, [field]: value, dirty: true, resetPending: false } : r)));
+    setRemoved((ks) => (ks.includes(key) && builtInKeys.includes(key) ? ks.filter((k) => k !== key) : ks));
+  }, [builtInKeys]);
+  const addRow = useCallback(
+    (key: string) => {
+      setRows((rs) =>
+        rs.some((r) => r.key === key)
+          ? rs
+          : [
+              ...rs,
+              { key, input: '', output: '', cacheRead: '', cacheWrite: '', source: 'user', asOf: '', builtIn: builtInKeys.includes(key), dirty: true },
+            ],
+      );
+      // Added again after a removal: it is saved as a new value, not deleted.
+      setRemoved((ks) => (ks.includes(key) ? ks.filter((k) => k !== key) : ks));
+    },
+    [builtInKeys],
+  );
+  /**
+   * A built-in row the user overrode (source 'user') can be reset: the override is dropped on save
+   * (sent in pricingRemove) and the row returns to the built-in default. Editing the row again cancels it.
+   */
+  const resetRow = useCallback(
+    (key: string) => {
+      if (!builtInKeys.includes(key)) return;
+      setRows((rs) => rs.map((r) => (r.key === key && r.source === 'user' ? { ...r, resetPending: true, dirty: false } : r)));
+      setRemoved((ks) => (ks.includes(key) ? ks : [...ks, key]));
+    },
+    [builtInKeys],
+  );
+  /** Every row except a built-in default key can be removed (decided by key, not by `source`). */
   const removeRow = useCallback(
-    (key: string) => setRows((rs) => rs.filter((r) => r.key !== key || r.source === 'default-assumption')),
-    [],
+    (key: string) => {
+      if (builtInKeys.includes(key)) return;
+      setRows((rs) => rs.filter((r) => r.key !== key));
+      setRemoved((ks) => (ks.includes(key) ? ks : [...ks, key]));
+    },
+    [builtInKeys],
   );
 
   const today = new Date().toISOString().slice(0, 10);
-  const pricingParsed = useMemo(() => rowsToPricing(rows, today), [rows, today]);
+  // Only rows edited or added here are sent (and validated): untouched rows are the server's own values.
+  const pricingParsed = useMemo(() => rowsToPricing(rows.filter((r) => r.dirty), today), [rows, today]);
+  // Only keys the server listed need deleting; a row added and removed here never reached the server.
+  const serverPricing = settings?.pricing;
+  const pricingRemove = useMemo(
+    () =>
+      removed.filter(
+        (k) =>
+          !!serverPricing &&
+          Object.hasOwn(serverPricing, k) &&
+          // Built-in keys are sent only to drop a user override ("Reset to default").
+          (!builtInKeys.includes(k) || serverPricing[k]?.source === 'user'),
+      ),
+    [removed, serverPricing, builtInKeys],
+  );
 
   const pacing = parsePacing(pacingSec);
+  const serverLimitValues = useMemo(() => limitsToValues(serverLimits), [serverLimits]);
+  const limitsChanged = (Object.keys(serverLimitValues) as LimitField[]).some((f) => limitsForm.values[f] !== serverLimitValues[f]);
 
-  let patch: Partial<AppSettings> | null = null;
+  let patch: AppSettingsPatch | null = null;
   if (limitsForm.limits && !Object.keys(pricingParsed.errors).length && pacing.ms !== null) {
-    // Pricing = exactly the rows listed. The server treats the map as the COMPLETE set of user entries (it
-    // ignores unedited copies of its built-in defaults), so a removed row stays removed after the save.
-    patch = { defaultLimits: limitsForm.limits, animationSpeed, reduceMotion, pricing: pricingParsed.pricing };
-    // Partial update: sent only when it differs from the server's value (the server keeps its value otherwise).
-    if (pacing.ms !== serverPacingMs) patch.roundPacingMs = pacing.ms;
+    // Partial update: each field is sent only when it differs from the loaded server value, so saving from
+    // a tab with an older copy cannot overwrite what another tab saved in the meantime.
+    const next: AppSettingsPatch = {};
+    if (limitsChanged) next.defaultLimits = limitsForm.limits;
+    if (settings && animationSpeed !== settings.animationSpeed) next.animationSpeed = animationSpeed;
+    if (settings && reduceMotion !== settings.reduceMotion) next.reduceMotion = reduceMotion;
+    if (pacing.ms !== serverPacingMs && pacingSec !== pacingToInput(serverPacingMs)) next.roundPacingMs = pacing.ms;
+    if (Object.keys(pricingParsed.pricing).length) next.pricing = pricingParsed.pricing;
+    if (pricingRemove.length) next.pricingRemove = pricingRemove;
+    patch = next;
   }
+  /** The form holds changes that are not saved yet (or input that is not valid). */
+  const unsaved = patch === null || Object.keys(patch).length > 0;
 
   return {
     limitsForm,
@@ -160,8 +233,10 @@ export function useSettingsForm(settings: AppSettings | null) {
     updateRow,
     addRow,
     removeRow,
+    resetRow,
     pricingErrors: pricingParsed.errors,
     patch,
+    unsaved,
   };
 }
 

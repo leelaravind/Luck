@@ -1,6 +1,6 @@
 # Architecture
 
-Luck is a single local application: a Fastify backend (Node 22.22.2+ or 24.15+, TypeScript) that owns every game rule and
+Luck is a single local application: a Fastify backend (Node 22.22.2+, 24.15+ or 26+, TypeScript) that owns every game rule and
 every credit, a React + Vite frontend that only displays state and sends requests, and a SQLite file
 (`data/luck.db`, via the built-in `node:sqlite`) that makes sessions durable.
 

@@ -9,17 +9,20 @@
  *                                  budget_exhausted / model_stop)
  *
  * One loop iteration:
- *   check limits (BEFORE any request) → phase requesting_decision → exactly one decision
- *   → bet/skip: synchronous round flow (commit → draw → settle) → round pacing wait
- *   → honour pause_requested / step / stop (a session that reached a limit completes instead of
- *     pausing).
+ *   honour stop / pause_requested / step and check limits (BEFORE any request) → phase
+ *   requesting_decision → exactly one decision → bet/skip: synchronous round flow (commit → draw →
+ *   settle) → honour stop / pause_requested / step / limits AT ONCE (a session that reached a limit
+ *   completes instead of pausing) → only when another decision follows: round pacing wait.
  * The wait between rounds is settings.roundPacingMs (default 7 s). It does NOT depend on the
  * animation speed, which is presentation only: the animation can never make models be called more
- * often. There is always exactly one decision per round.
+ * often. There is always exactly one decision per round. The wait never delays a control: Pause,
+ * Step and Stop end it immediately, and a changed roundPacingMs applies to the wait in progress.
  *
  * Failed decisions: with maxConsecutiveFailures > 1 the runner keeps going after a failed decision,
- * but first waits the provider's Retry-After (or a bounded backoff; abortable by Stop). Only the
- * failure that reaches the limit pauses the session, and only that one says so.
+ * but first waits the provider's Retry-After (or a bounded backoff). Stop, Pause and a reached
+ * limit are honoured before that wait, and Stop / Pause end it early ("Paused before the next
+ * decision." — no round was played). Only the failure that reaches the limit pauses the session
+ * with the failure, and only that one says so.
  *
  * Stop: aborts an in-flight request (decision 'cancelled'; a late answer is recorded as stale and
  * never applied) or the presentation wait. A round whose bets were committed always settles
@@ -40,6 +43,13 @@ const MODEL_REQUIRED = new Set(['ollama', 'anthropic', 'openai']);
 const STOP_WAIT_MS = 10_000;
 /** Appended to the message of a failed decision when (and only when) the session really pauses. */
 export const PAUSED_AFTER_FAILURE = 'Session paused — press Start to try again.';
+/** Session message of a user pause honoured right after a played round. */
+export const PAUSED_AFTER_ROUND = 'Paused after the round, as requested.';
+/** Session message of a user pause honoured when no round was played (e.g. after a failed decision). */
+export const PAUSED_BEFORE_DECISION = 'Paused before the next decision.';
+
+/** What the runner's previous loop iteration did: decides the pause message and when a Step is done. */
+type LastIteration = 'none' | 'round' | 'failed';
 
 interface RunnerHandle {
   readonly sessionId: string;
@@ -49,6 +59,14 @@ interface RunnerHandle {
   roundInFlight: boolean;
   /** Decisions in a row that failed after their bounded retries (reset by any usable decision). */
   consecutiveFailures: number;
+  /** 'round' once a round was played, 'failed' after a failed decision, 'none' before either. */
+  last: LastIteration;
+  /**
+   * Ends the current wait between decisions (round pacing / failed-decision backoff) so the runner
+   * re-evaluates at once. Signalled by Pause, Step and a settings change; Stop / shutdown abort
+   * `controller`, which is forwarded to it. Null while the runner is not waiting.
+   */
+  wake: AbortController | null;
   lastTick: number;
   done: Promise<void>;
 }
@@ -58,6 +76,8 @@ export interface RunnerManager {
   pause(sessionId: string): void;
   /** Synchronous part of Stop; the returned promise resolves once the runner has wound down. */
   stop(sessionId: string): Promise<void>;
+  /** Settings were saved: a wait in progress re-reads roundPacingMs. */
+  settingsChanged(): void;
   inFlight(sessionId: string): { decision: boolean; round: boolean };
   isRunning(sessionId: string): boolean;
   /** Abort every runner (reason 'shutdown') and wait up to `waitMs` for them to exit. */
@@ -65,6 +85,14 @@ export interface RunnerManager {
   /** Test/diagnostic: number of live runners. */
   size(): number;
 }
+
+/** How the runner ends at a boundary (see boundaryEnd). */
+type BoundaryEnd =
+  | { kind: 'stopped' }
+  | { kind: 'paused'; reason: PauseReason; message: string }
+  | { kind: 'completed'; reason: SessionEndReason; message: string }
+  /** The status was changed elsewhere: just let go of the session. */
+  | { kind: 'detached' };
 
 export function createRunnerManager(core: SessionCore): RunnerManager {
   const runners = new Map<string, RunnerHandle>();
@@ -159,32 +187,83 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
   }
 
   /**
-   * Honour a pending control request at a round boundary. `stepDone`: the single round of a Step
-   * has been played. Before pausing (Pause after round / Next round), the limits are checked: a
-   * session that cannot continue completes instead of showing "paused". Returns true when the loop
-   * must exit.
+   * What must happen before another decision may be requested, or null to go on:
+   *  - Stop → stopped; shutdown → paused (server_restart)
+   *  - Pause after round, or the single round of a Step played → paused; but a session that cannot
+   *    continue (a reached limit) completes instead of showing "paused"
+   *  - status changed elsewhere → detached
+   *  - a reached limit → completed
+   * Evaluated right after every round and failed decision (so nothing waits for the round pacing
+   * or a backoff first) and again before every request.
    */
-  function atBoundary(h: RunnerHandle, s: SessionInfo, stepDone: boolean): boolean {
-    if (s.status === 'stop_requested') {
-      finishStopped(h);
-      return true;
-    }
+  function boundaryEnd(h: RunnerHandle, s: SessionInfo): BoundaryEnd | null {
+    if (s.status === 'stop_requested') return { kind: 'stopped' };
     if (h.controller.signal.aborted && h.controller.signal.reason === 'shutdown') {
-      finishPaused(h, 'server_restart', 'Server shut down during the session. Press Start to resume.');
-      return true;
+      return { kind: 'paused', reason: 'server_restart', message: 'Server shut down during the session. Press Start to resume.' };
     }
-    if (s.status === 'pause_requested' || (s.status === 'running' && stepDone)) {
+    const stepDone = s.status === 'running' && h.stepOnce && h.last === 'round';
+    if (s.status === 'pause_requested' || stepDone) {
       const limit = limitReached(s);
-      if (limit) finishCompleted(h, limit.reason, limit.message);
-      else if (s.status === 'pause_requested') finishPaused(h, 'user_pause', 'Paused after the round, as requested.');
-      else finishPaused(h, 'step_complete', 'Step complete: one round was played.');
-      return true;
+      if (limit) return { kind: 'completed', ...limit };
+      if (s.status === 'pause_requested') {
+        return { kind: 'paused', reason: 'user_pause', message: h.last === 'round' ? PAUSED_AFTER_ROUND : PAUSED_BEFORE_DECISION };
+      }
+      return { kind: 'paused', reason: 'step_complete', message: 'Step complete: one round was played.' };
     }
-    if (s.status !== 'running') {
-      deregister(h);
-      return true;
+    if (s.status !== 'running') return { kind: 'detached' };
+    const limit = limitReached(s);
+    return limit ? { kind: 'completed', ...limit } : null;
+  }
+
+  function endAt(h: RunnerHandle, end: BoundaryEnd): void {
+    switch (end.kind) {
+      case 'stopped':
+        return finishStopped(h);
+      case 'paused':
+        return finishPaused(h, end.reason, end.message);
+      case 'completed':
+        return finishCompleted(h, end.reason, end.message);
+      case 'detached':
+        return deregister(h);
     }
-    return false;
+  }
+
+  /** Honour a pending control request or a reached limit (see boundaryEnd). Returns true when the loop must exit. */
+  function atBoundary(h: RunnerHandle, s: SessionInfo): boolean {
+    const end = boundaryEnd(h, s);
+    if (!end) return false;
+    endAt(h, end);
+    return true;
+  }
+
+  /**
+   * Wait between decisions (round pacing or failed-decision backoff) without ever holding up a
+   * control. Ends at once on Stop / shutdown (the run signal is forwarded) and as soon as the
+   * session is no longer plainly running (Pause requested) or a Step is armed; the caller then
+   * re-checks the boundary. A settings change wakes it too and `durationMs` is read again, so a
+   * new roundPacingMs applies to the wait in progress (measured from its start). A wake that
+   * changed nothing (e.g. a Pause withdrawn by Start) keeps waiting for the remaining time.
+   */
+  async function waitBetweenDecisions(h: RunnerHandle, durationMs: () => number): Promise<void> {
+    const started = core.now().getTime();
+    for (;;) {
+      if (h.controller.signal.aborted) return;
+      const s = core.repo.getSession(h.sessionId);
+      if (!s || s.status !== 'running' || (h.stepOnce && h.last === 'none')) return;
+      const remaining = started + Math.max(0, durationMs()) - core.now().getTime();
+      if (remaining <= 0) return;
+      const wake = new AbortController();
+      const forward = () => wake.abort(h.controller.signal.reason);
+      h.controller.signal.addEventListener('abort', forward, { once: true });
+      h.wake = wake;
+      try {
+        await waitAbortable(core.sleep, remaining, wake.signal);
+      } finally {
+        h.controller.signal.removeEventListener('abort', forward);
+        if (h.wake === wake) h.wake = null;
+      }
+      if (!wake.signal.aborted) return; // the full time elapsed
+    }
   }
 
   function limitReached(s: SessionInfo): { reason: SessionEndReason; message: string } | null {
@@ -212,10 +291,8 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
       for (;;) {
         await yieldToEventLoop();
         let s = flushRuntime(h);
-        if (atBoundary(h, s, false)) return;
-
-        const limit = limitReached(s);
-        if (limit) return finishCompleted(h, limit.reason, limit.message);
+        // Stop / Pause / Step / a reached limit are honoured BEFORE any request.
+        if (atBoundary(h, s)) return;
 
         core.updateSession(id, { phase: 'requesting_decision' });
 
@@ -235,6 +312,7 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
           }
           if (s.status === 'stop_requested') return finishStopped(h);
           // Stale result without a stop request (epoch changed elsewhere): re-check at the top.
+          h.last = 'none';
           core.updateSession(id, { phase: idlePhase(core.repo, id) });
           continue;
         }
@@ -248,18 +326,20 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
             h.consecutiveFailures += 1;
             const allowed = Math.max(1, s.limits.maxConsecutiveFailures);
             if (h.consecutiveFailures >= allowed) return finishPaused(h, outcome.pauseReason, `${outcome.message} ${PAUSED_AFTER_FAILURE}`);
+            h.last = 'failed';
+            s = core.updateSession(id, { phase: idlePhase(core.repo, id) });
+            const failed = `${outcome.message} (failed decision ${h.consecutiveFailures} of ${allowed} allowed in a row; no round was played).`;
+            // Stop / Pause / a reached limit first: they never wait for the backoff.
+            const end = boundaryEnd(h, s);
+            if (end) {
+              core.log(id, 'warn', 'decision_failed', failed);
+              return endAt(h, end);
+            }
             // Keep going, but not straight away: honour the provider's Retry-After (capped), else back
-            // off 1 s, 2 s, 4 s… The wait is abortable by Stop / shutdown (handled at the loop top).
+            // off 1 s, 2 s, 4 s… Stop / shutdown / Pause end the wait early (handled at the loop top).
             const delay = computeBackoffMs(h.consecutiveFailures, outcome.retryAfterMs !== null ? { retryAfterMs: outcome.retryAfterMs } : null);
-            core.log(
-              id,
-              'warn',
-              'decision_failed',
-              `${outcome.message} (failed decision ${h.consecutiveFailures} of ${allowed} allowed in a row; no round was played). ` +
-                `The session keeps running; next decision in ${formatWait(delay)}.`,
-            );
-            core.updateSession(id, { phase: idlePhase(core.repo, id) });
-            await waitAbortable(core.sleep, delay, h.controller.signal);
+            core.log(id, 'warn', 'decision_failed', `${failed} The session keeps running; next decision in ${formatWait(delay)}.`);
+            await waitBetweenDecisions(h, () => delay);
             continue;
           }
           case 'stop':
@@ -283,15 +363,18 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
             } finally {
               h.roundInFlight = false;
             }
+            h.last = 'round';
             break;
           }
         }
 
-        // Round pacing (settings.roundPacingMs, independent of the animation speed); abortable by
-        // Stop / shutdown (never by Pause).
-        await waitAbortable(core.sleep, core.presentationDelayMs(core.settings()), h.controller.signal);
+        // Right after the round: Stop / Pause after round / the end of a Step / a reached limit end
+        // the run now — no further decision follows, so nothing waits for the round pacing.
         s = flushRuntime(h);
-        if (atBoundary(h, s, h.stepOnce)) return;
+        if (atBoundary(h, s)) return;
+        // Round pacing (settings.roundPacingMs, independent of the animation speed), only because
+        // another decision follows. Stop / shutdown / Pause end it early; a new value applies at once.
+        await waitBetweenDecisions(h, () => core.presentationDelayMs(core.settings()));
       }
     } catch (err) {
       const message = redact(err instanceof Error ? err.message : String(err));
@@ -326,6 +409,8 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
       decisionInFlight: false,
       roundInFlight: false,
       consecutiveFailures: 0,
+      last: 'none',
+      wake: null,
       lastTick: core.now().getTime(),
       done: Promise.resolve(),
     };
@@ -368,8 +453,14 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
           const existing = runners.get(sessionId);
           core.updateSession(sessionId, { status: 'running', pauseReason: null, message: null });
           core.log(sessionId, 'info', step ? 'session_step' : 'session_started', step ? 'Playing one round (step)' : 'Autonomous play started');
-          if (existing) existing.stepOnce = step; // defensive: never two loops for one session
-          else spawn(sessionId, step);
+          if (existing) {
+            // Defensive: never two loops for one session. A Step armed here plays its round now.
+            existing.stepOnce = step;
+            if (step) {
+              existing.last = 'none';
+              existing.wake?.abort('step');
+            }
+          } else spawn(sessionId, step);
           return;
         }
       }
@@ -379,15 +470,19 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
       const s = requireSession(sessionId);
       if (s.mode === 'manual') throw new GameError('invalid_state', 'Manual sessions cannot be paused');
       switch (s.status) {
-        case 'running':
-          if (!runners.has(sessionId)) {
+        case 'running': {
+          const h = runners.get(sessionId);
+          if (!h) {
             // No live runner (e.g. recovery has not run yet): nothing to finish, pause now.
             core.updateSession(sessionId, { status: 'paused', pauseReason: 'user_pause', phase: idlePhase(core.repo, sessionId), message: 'Paused.' });
             return;
           }
           core.updateSession(sessionId, { status: 'pause_requested', message: 'Pausing after the current round…' });
           core.log(sessionId, 'info', 'pause_requested', 'Pause requested; the current round will finish first');
+          // Between rounds (pacing) or after a failed decision (backoff): pause now, not after the wait.
+          h.wake?.abort('pause');
           return;
+        }
         case 'pause_requested':
         case 'paused':
           return; // idempotent
@@ -422,6 +517,10 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
       core.log(sessionId, 'info', 'stop_requested', 'Stop requested; cancelling any in-flight request');
       h.controller.abort('stop');
       await waitFor(h.done, STOP_WAIT_MS);
+    },
+
+    settingsChanged() {
+      for (const h of runners.values()) h.wake?.abort('settings');
     },
 
     inFlight(sessionId) {

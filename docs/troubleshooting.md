@@ -4,10 +4,12 @@ Commands are shown for **PowerShell** first, then **bash** (macOS / Linux / Git 
 
 ## Installing
 
-### `node` is not recognised, or "Node.js … is too old"
+### `node` is not recognised, or "Node.js … is not supported"
 
-Luck needs Node.js **22.22.2 or newer** (22 LTS) or **24.15 or newer** (`package.json` → `engines`:
-`^22.22.2 || >=24.15.0`). Install it from <https://nodejs.org/>, then open a **new** terminal window and check:
+Luck needs Node.js **22.22.2 or newer 22.x** (22 LTS), **24.15 or newer 24.x** (24 LTS) or **26 or newer**
+(`package.json` → `engines`: `^22.22.2 || ^24.15.0 || >=26.0.0`, the same range as the test tools). The
+short-lived 23.x and 25.x lines are **not** supported, and the start scripts refuse them. Install a supported
+release from <https://nodejs.org/>, then open a **new** terminal window and check:
 
 ```
 node --version

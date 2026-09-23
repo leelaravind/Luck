@@ -1,8 +1,8 @@
 # Verification report (2026-09-23)
 
 What was actually checked, how, and what is still open. Counts are copied from real command output.
-Updated after the final audit's fix round (items refer to that audit); counts marked `<!--COUNTS-->` are filled in
-from the final run of that round.
+Updated after the final audit's fix rounds (items refer to that audit); the clean-checkout counts below come from
+the final run of the last round.
 
 ## Automated checks
 
@@ -88,7 +88,7 @@ repository hygiene).
 | A11b-N2 demo player skipped forever when short of its flat stake (no default round limit) | medium | **fixed**: stakes the remaining legal amount; tests updated |
 | A11b-N3 strategy + explanation clipped together | low | **fixed**: separate budgets |
 | A11b-N4 objective text ignored configured limits | low | **fixed**: end conditions built from the session's limits; test added |
-| A11b-N5 CLI worst case ignored the resumed conversation when pricing is set | low | **fixed**: never below 2 × last CLI-reported cost |
+| A11b-N5 CLI worst case ignored the resumed conversation when pricing is set | low | **fixed**: worst case = max(pricing estimate, 2 × last turn's CLI cost, the session's total CLI cost so far, $0.05) — still an upper bound when a resumed turn has to re-read an expired prompt cache |
 | A11b-N6 no repo test for spin priority over the resting ball | low | **fixed**: RouletteWheel.priority.test.tsx |
 
 Independent closure review (A11, second pass): D1, D4, D5, D6, D8, D9 and the no-limit / stop / strategy / CLI
@@ -100,12 +100,19 @@ Fresh `git clone https://github.com/leelaravind/Luck` → `npm ci` → `npm run 
 — all succeeded before this fix round, and the built single-port server served the UI.
 <!--COUNTS--> TODO(lead): re-run the clean checkout after this fix round and record its test files / tests here.
 
-**ZIP download (no git).** Before this fix round a ZIP download failed 1 test and `npm run secret-scan`, because the
-scanner needed git. The scanner now falls back to walking the folder (honouring `.gitignore`) with a notice. Checked
-by the tests (a folder outside any git repository and a run without git on `PATH`) and on a copy of the
-publishable files outside git: notice printed, the same number of files scanned as in git mode, clean — also after
-adding a `.env` with a key-shaped value, `data/luck.db`, `tmp/` and `node_modules/`, which `.gitignore` excludes.
-A full `npm ci` + `npm test` from a real GitHub ZIP was not run.
+**ZIP download (no git).** Before the first fix round a ZIP download failed 1 test and `npm run secret-scan`,
+because the scanner needed git. The scanner now falls back to walking the folder (honouring `.gitignore`) with a
+notice. Checked by the tests (a folder outside any git repository and a run without git on `PATH`) and on a copy of
+the publishable files outside git: notice printed, the same number of files scanned as in git mode, clean — also
+after adding a `.env` with a key-shaped value, `data/luck.db`, `tmp/` and `node_modules/`, which `.gitignore` excludes.
+The final audit's closure check then ran the ZIP equivalent on the first fix round's commit: `git archive` (the
+tool GitHub uses to build its ZIP downloads, so the same file set) unpacked outside any git repository →
+`npm ci` → `npm test`: 1 181 tests passed and the 3 tests that need git were skipped; the secret scan used walk
+mode with a notice and scanned 223 files, clean. One of its runs failed in `tests/security/vite-dev.test.ts`
+(a request timeout while the machine was loaded); the second fix round made that test warm the dev server up first
+(see below). Since then the scanner also walks a folder that sits inside another repository which ignores it or
+tracks none of its files (a ZIP unpacked under another project's ignored `tmp/` previously scanned 0 files and
+reported "clean"), and a folder for which git lists no files.
 
 ## Final audit fix round — dev server, repository, documentation
 
@@ -137,15 +144,49 @@ A full `npm ci` + `npm test` from a real GitHub ZIP was not run.
   (code.html `43c9d2f7…`, DESIGN.md `7642fba5…`, screen.png `b2569bf3…`).
 - **What the Claude Code CLI adds (item 28).** Read-only look at the CLI's own transcript of a game conversation
   (2026-09-23): besides Luck's prompt and observation it contains CLI-added `environment` (working directory,
-  platform, shell, OS version), `date` and `session_context` (the account e-mail) entries. Now disclosed in
-  [providers.md](providers.md) and [providers-cli-laya.md](providers-cli-laya.md#what-the-model-sees); the CLI's
-  sandbox is now outside the repository (`<OS temp folder>/luck-cli-sandbox`).
+  platform, shell, OS version), `date` and `session_context` (the account e-mail) entries. The closure check's
+  transcript of a 3-round session with an app spending limit (Claude Code 2.1.280, haiku) also showed `model` (the
+  model's name, id and knowledge cutoff), a `total_tokens_reminder` every turn and a `budget_usd` entry every turn
+  built from Luck's `--max-budget-usd` — the remaining app budget (`total` 0.5, then 0.494649, then 0.482874). All
+  of these are now disclosed in [providers.md](providers.md) and
+  [providers-cli-laya.md](providers-cli-laya.md#what-the-model-sees); the CLI's sandbox is now outside the
+  repository (`<OS temp folder>/luck-cli-sandbox`).
 - **Docs brought up to date (items 8–11).** Laya: 13 labels, no `stop`, live test recorded; the requirements
   checklist has a status and evidence for every row; `testing.md` no longer lists a failure that was fixed.
 
+## Second fix round — findings of the closure check (tests, scripts, docs)
+
+- **Flaky dev-server test.** `tests/security/vite-dev.test.ts` timed out in some full-suite runs on a loaded
+  machine (cold Vite transforms of `/main.tsx` under the default 20 s test timeout; one `ECONNRESET`). Its
+  `beforeAll` now warms the server (`/`, `/main.tsx`, `/@vite/client`, a `src/shared` module; 120 s hook budget),
+  every test has an explicit timeout (120 s for the HTTP tests), and each request opens its own connection. The
+  assertions are unchanged.
+- **Secret scan in a folder inside another repository.** A folder under an enclosing repository's ignored path was
+  scanned in git mode, which listed 0 files and printed "clean". The scanner now falls back to walk mode with a
+  notice when the folder is ignored by the enclosing repository, has no file tracked there, or git lists no files
+  (`secret-scan.test.ts`: a planted key under this repository's `tmp/`, a throw-away enclosing repository, and a
+  repository whose local exclude file hides every file).
+- **Startup message.** A direct start without `--production` said to open the Vite URL although Vite was not
+  running. Only the `dev:server` script (`npm run dev`) now passes `--dev-runner`, and only then is that URL
+  printed; a build in `dist/web` is described as "a production build from dist/web (may be out of date)"
+  (`src/server/index.test.ts` starts the real entry point both ways).
+- **Node.js range.** `engines` is now `^22.22.2 || ^24.15.0 || >=26.0.0` — the test tools' own range — in
+  `package.json` and the lock file's root entry; both start scripts refuse 23.x and 25.x
+  (`tests/security/node-engines.test.ts` runs both scripts' checks on fake versions).
+- **Docs.** CLI disclosure completed (`model`, `total_tokens_reminder`, `budget_usd`); the checklist no longer
+  calls the output-token cap optional (it is always set: default 1000, editable); the Laya explanation examples
+  use the current format; a dangling evidence reference (I3) now points to Live checks.
+
+## Outstanding
+
+- **Old commits are still viewable by SHA on GitHub.** The history was rewritten and the CI runs of the 5 commits
+  from before the rewrite were deleted; no branch, tag, pull request or release points at them. GitHub still
+  serves those commits by SHA (commit page and REST API) until GitHub Support processes the owner's request to
+  purge them. Nothing in these docs refers to them.
+
 ## Not verified yet
 
-- A full `npm ci` + `npm test` from a real GitHub ZIP download (the scanner fallback was checked on a copy).
+- A ZIP downloaded from github.com itself (the `git archive` equivalent was run — see Clean checkout).
 
 - A keyboard-only walkthrough and a screen-reader pass of the running UI.
 - A live wheel animation watched end to end in a visible tab (the automation tab reports `hidden`, so reveals were immediate).

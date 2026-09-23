@@ -33,7 +33,7 @@ More documentation: [architecture](docs/architecture.md) · [AI providers](docs/
 | What | Version |
 |---|---|
 | Operating system | **Windows 10 / 11 first**; macOS and Linux also work |
-| Node.js | **22.22.2 or newer** (22 LTS), or **24.15 or newer** — download from <https://nodejs.org/> |
+| Node.js | **22.22.2 or newer 22.x** (22 LTS), **24.15 or newer 24.x** (24 LTS), or **26 or newer** — download from <https://nodejs.org/> |
 | npm | comes with Node.js |
 | Git | recommended, to download the project with `git clone` (a ZIP download from GitHub works too — see step 3) |
 
@@ -41,8 +41,10 @@ Optional, only if you want to use them as players: [Ollama](https://ollama.com/)
 Anthropic or OpenAI-compatible API key, the Claude Code CLI, or a local `laya-serve`.
 See [docs/providers.md](docs/providers.md).
 
-Check your Node.js version with `node --version`. Older releases (22.x before 22.22.2, 24.x before 24.15) are not
-supported; the test tools need at least these versions.
+Check your Node.js version with `node --version`. Older releases (22.x before 22.22.2, 24.x before 24.15) and the
+short-lived 23.x and 25.x lines are not supported: the test tools need exactly this range (`package.json` →
+`engines`: `^22.22.2 || ^24.15.0 || >=26.0.0`). The automated tests run on 22.22.2, 24.15.0 and the latest 22 and
+24 releases; 26 or newer is allowed by that range but not part of the automated test matrix.
 
 ## 3. Install
 
@@ -66,8 +68,9 @@ Nothing is installed globally. (Shortcut: the start scripts in step 5 run `npm c
 
 **Without git:** on the GitHub page choose *Code → Download ZIP*, unpack it, open a terminal in the unpacked
 `Luck` folder and run `npm ci`. Everything works the same; `git clone` is still recommended because it makes
-updating easy. In a folder that is not a git repository, `npm run secret-scan` (and its test) prints a notice and
-scans the folder itself, skipping what `.gitignore` excludes, instead of asking git.
+updating easy. In a folder that is not a git repository — or one unpacked inside another git repository that
+ignores it or tracks none of its files — `npm run secret-scan` (and its test) prints a notice and scans the folder
+itself, skipping what `.gitignore` excludes, instead of asking git.
 
 ## 4. Configure
 
@@ -166,7 +169,7 @@ npm run build
 
 ## 9. Troubleshooting
 
-- **`node` is not recognised / version too old** — install Node.js 22.22.2+ (22 LTS) or 24.15+ from nodejs.org and open a new terminal.
+- **`node` is not recognised / version not supported** — install Node.js 22.22.2+ (22 LTS), 24.15+ (24 LTS) or 26+ from nodejs.org (not 23.x or 25.x) and open a new terminal.
 - **"Port 3717 is already in use"** — Luck may already be running in another window. Close it, or set another `LUCK_PORT` in `.env`. Luck never stops other programs for you.
 - **Scripts are blocked in PowerShell** — run `powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1` (this only affects that one run).
 - **A provider shows "not configured"** — check its key / URL in `.env`, restart, then use the connection test.

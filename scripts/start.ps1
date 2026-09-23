@@ -3,7 +3,7 @@
   Start Luck - AI Roulette Lab (Windows PowerShell 5.1 or PowerShell 7+).
 
 .DESCRIPTION
-  Works from any folder. Checks Node.js (22.22.2 or newer 22.x, or 24.15.0 or newer), runs "npm ci" if node_modules
+  Works from any folder. Checks Node.js (22.22.2 or newer 22.x, 24.15.0 or newer 24.x, or 26 or newer), runs "npm ci" if node_modules
   is missing, creates .env from .env.example if .env does not exist (never overwrites it),
   then runs "npm run dev" (default) or "npm start" (-Prod).
   It never installs anything globally and never stops other programs.
@@ -27,10 +27,12 @@ Set-StrictMode -Version 2.0
 
 # Repository root = parent of the folder this script lives in (independent of the current directory).
 $RepoRoot = Split-Path -Parent $PSScriptRoot
-# Supported Node.js releases, same as package.json "engines": ^22.22.2 || >=24.15.0
+# Supported Node.js releases, same as package.json "engines": ^22.22.2 || ^24.15.0 || >=26.0.0
+# (23.x and 25.x are not supported: the test tools do not support them either).
 $MinNode22 = [version]'22.22.2'
 $MinNode24 = [version]'24.15.0'
-$NodeRequirement = 'Node.js 22 LTS (22.22.2 or newer) or Node.js 24.15.0 or newer'
+$MinNode26 = [version]'26.0.0'
+$NodeRequirement = 'Node.js 22 LTS (22.22.2 or newer 22.x), Node.js 24 LTS (24.15.0 or newer 24.x) or Node.js 26 or newer'
 
 function Fail([string]$Message) {
   Write-Host ''
@@ -54,9 +56,9 @@ $nodeVersion = $null
 if (-not [version]::TryParse($nodeVersionText, [ref]$nodeVersion)) {
   Fail "Could not read the Node.js version (got '$nodeVersionText')."
 }
-$nodeSupported = (($nodeVersion.Major -eq 22) -and ($nodeVersion -ge $MinNode22)) -or ($nodeVersion -ge $MinNode24)
+$nodeSupported = (($nodeVersion.Major -eq 22) -and ($nodeVersion -ge $MinNode22)) -or (($nodeVersion.Major -eq 24) -and ($nodeVersion -ge $MinNode24)) -or ($nodeVersion -ge $MinNode26)
 if (-not $nodeSupported) {
-  Fail "Node.js $nodeVersionText is not supported. Luck needs $NodeRequirement (the oldest releases it is tested with). Download it from https://nodejs.org/."
+  Fail "Node.js $nodeVersionText is not supported. Luck needs $NodeRequirement (older 22.x / 24.x releases and the short-lived 23.x / 25.x lines are not supported). Download it from https://nodejs.org/."
 }
 
 $exitCode = 1

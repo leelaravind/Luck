@@ -5,6 +5,7 @@
 import type {
   AiProviderKind,
   AppSettings,
+  AppSettingsPatch,
   ConnectionTestResult,
   ControlAction,
   CreateSessionRequest,
@@ -272,7 +273,7 @@ export interface GameService {
   listModels(kind: AiProviderKind, player?: PlayerConfig): Promise<string[]>;
 
   getSettings(): AppSettings;
-  updateSettings(patch: Partial<AppSettings>): AppSettings;
+  updateSettings(patch: AppSettingsPatch): AppSettings;
 
   listSessions(): SessionInfo[];
   createSession(req: CreateSessionRequest, idempotencyKey: string): SessionSnapshot;

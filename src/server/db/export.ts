@@ -3,12 +3,15 @@
  * ever contains what the repository stored — never secrets, env or server config.
  *
  * Masking (defence in depth): stored text is supposed to be redacted by whoever stored it, but a
- * provider could still echo a key back inside text that was stored verbatim (explanation, raw
- * output, model names…). So both serialisers finish with redact() (../redact.ts): every string
- * value is redacted first (JSON: before serialising, so escapes stay intact; CSV: every text
- * cell), then a final redact() pass runs over the whole output text. That final pass is kept only
- * if the file structure survives it (JSON still parses; CSV has the same quotes, commas and line
- * breaks), so masking can never produce a broken file.
+ * provider could still echo a key back inside text that was stored verbatim. So the serialisers
+ * run redact() (../redact.ts) over the FREE-TEXT fields only. toJsonExport() goes through
+ * redactExport(): decision explanation / rawOutput / errorMessage / validationErrors / providerNote /
+ * model, usage model, log messages, the session name and message, the player's model, and the
+ * credential-bearing parts of the player's base URL (user info, query, fragment). toCsvExport()
+ * masks its one free-text column, decision_explanation. Structured fields are never touched: ids,
+ * enums (kind, providerKind, status, source, action, costBasis …), timestamps, numbers, generated
+ * bet labels and a URL's scheme, host and path. There is no pass over the serialised text, so the
+ * JSON always parses and the CSV keeps its cells.
  *
  * CSV rules:
  *  - RFC 4180: comma separated, CRLF line endings, cells quoted when they contain a quote,
@@ -25,43 +28,94 @@
 import {
   SUBUNITS_PER_CREDIT,
   type DecisionRecord,
+  type LogEntry,
+  type PlayerConfig,
   type RoundRecord,
+  type SessionInfo,
   type Subunits,
   type UsageRecord,
 } from '../../shared/contracts.js';
 import { colorOf } from '../../shared/roulette.js';
-import { redact } from '../redact.js';
+import { REDACTED, redact } from '../redact.js';
 import type { SessionExport } from '../types.js';
 
-/** Deep copy of a JSON-like value with every string passed through redact(). Keys are kept. */
-export function redactStrings<T>(value: T): T {
-  if (typeof value === 'string') return redact(value) as T;
-  if (Array.isArray(value)) return value.map((v: unknown) => redactStrings(v)) as T;
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = redactStrings(v);
-    return out as T;
-  }
-  return value;
+/** redact() for an optional free-text value; null / undefined / non-strings pass through unchanged. */
+function maskText<T>(value: T): T {
+  return (typeof value === 'string' ? redact(value) : value) as T;
 }
 
 /**
- * Pretty-printed JSON, newline terminated, with secrets masked. When nothing in the export looks
- * like a secret, `JSON.parse(toJsonExport(x))` deep-equals `x`.
+ * Mask only the parts of a URL that can carry a credential — user info ("user:pass@"), the query
+ * string and the fragment. The scheme, host, port and path are kept verbatim, so a registered value
+ * that happens to equal a host or path segment never corrupts the address.
+ */
+export function redactUrl(url: string): string {
+  const cut = url.search(/[?#]/);
+  let head = cut === -1 ? url : url.slice(0, cut);
+  const tail = cut === -1 ? '' : url.slice(cut);
+  // "scheme://user:pass@host/…" → "scheme://[redacted]@host/…" (the "@" must come before the path).
+  head = head.replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@]*@/, `$1${REDACTED}@`);
+  return head + (tail ? redact(tail) : '');
+}
+
+function redactPlayer(player: PlayerConfig): PlayerConfig {
+  if (player === null || typeof player !== 'object') return player;
+  const out: PlayerConfig = { ...player };
+  if (typeof out.model === 'string') out.model = redact(out.model);
+  if (typeof out.baseUrl === 'string') out.baseUrl = redactUrl(out.baseUrl);
+  return out;
+}
+
+function redactSession(session: SessionInfo): SessionInfo {
+  return { ...session, name: maskText(session.name), message: maskText(session.message), player: redactPlayer(session.player) };
+}
+
+function redactDecision(d: DecisionRecord): DecisionRecord {
+  const out: DecisionRecord = {
+    ...d,
+    model: maskText(d.model),
+    explanation: maskText(d.explanation),
+    rawOutput: maskText(d.rawOutput),
+    errorMessage: maskText(d.errorMessage),
+    validationErrors: Array.isArray(d.validationErrors) ? d.validationErrors.map((e) => maskText(e)) : d.validationErrors,
+  };
+  if ('providerNote' in d) out.providerNote = maskText(d.providerNote);
+  return out;
+}
+
+/** Usage records hold numbers and enums; the model name is the only provider-echoed text. */
+function redactUsage(u: UsageRecord): UsageRecord {
+  return { ...u, model: maskText(u.model) };
+}
+
+function redactLog(l: LogEntry): LogEntry {
+  return { ...l, message: maskText(l.message) };
+}
+
+/**
+ * Copy of an export with secrets masked in its free-text fields only (see the file comment for the
+ * list). Rounds, ledger entries, ids, enums, timestamps and numbers are returned unchanged, and the
+ * input is never mutated. toJsonExport() calls this and toCsvExport() masks its one free-text cell
+ * itself, so callers do not need a masking pass of their own (a whole-object pass would also mask
+ * ids, enums and URLs).
+ */
+export function redactExport(exp: SessionExport): SessionExport {
+  const mapArray = <T>(items: T[], fn: (item: T) => T): T[] => (Array.isArray(items) ? items.map(fn) : items);
+  return {
+    ...exp,
+    session: exp.session ? redactSession(exp.session) : exp.session,
+    decisions: mapArray(exp.decisions, redactDecision),
+    usage: mapArray(exp.usage, redactUsage),
+    logs: mapArray(exp.logs, redactLog),
+  };
+}
+
+/**
+ * Pretty-printed JSON, newline terminated, with secrets masked in the free-text fields. When nothing
+ * in the export looks like a secret, `JSON.parse(toJsonExport(x))` deep-equals `x`.
  */
 export function toJsonExport(exp: SessionExport): string {
-  const text = JSON.stringify(redactStrings(exp), null, 2);
-  const final = redact(text);
-  if (final !== text) {
-    try {
-      JSON.parse(final);
-      return `${final}\n`;
-    } catch {
-      // The text-level pass cut through a JSON escape; the value-level pass above already masked
-      // every string, so keep that valid output.
-    }
-  }
-  return `${text}\n`;
+  return `${JSON.stringify(redactExport(exp), null, 2)}\n`;
 }
 
 export const CSV_COLUMNS = [
@@ -120,9 +174,15 @@ export function csvQuote(cell: string): string {
   return /[",\r\n]/.test(cell) ? `"${cell.replace(/"/g, '""')}"` : cell;
 }
 
-type Cell = { kind: 'text'; value: string | null } | { kind: 'number'; value: string | null };
+/**
+ * A CSV cell. 'free' = free text (masked with redact(), then formula-neutralised); 'label' = an enum,
+ * timestamp or app-generated label (formula-neutralised, never masked: it cannot hold a secret and
+ * masking would corrupt it); 'number' = numeric (written as is).
+ */
+type Cell = { kind: 'free' | 'label' | 'number'; value: string | null };
 
-const text = (value: string | null | undefined): Cell => ({ kind: 'text', value: value ?? null });
+const free = (value: string | null | undefined): Cell => ({ kind: 'free', value: value ?? null });
+const label = (value: string | null | undefined): Cell => ({ kind: 'label', value: value ?? null });
 const int = (value: number | null | undefined): Cell => ({
   kind: 'number',
   value: value == null ? null : String(value),
@@ -138,7 +198,8 @@ const usd = (micros: number | null | undefined): Cell => ({
 
 function renderCell(cell: Cell): string {
   if (cell.value === null) return '';
-  const value = cell.kind === 'text' ? neutraliseFormula(redact(cell.value)) : cell.value;
+  const value =
+    cell.kind === 'free' ? neutraliseFormula(redact(cell.value)) : cell.kind === 'label' ? neutraliseFormula(cell.value) : cell.value;
   return csvQuote(value);
 }
 
@@ -177,7 +238,10 @@ function usageByDecision(records: readonly UsageRecord[]): Map<string, DecisionU
   return out;
 }
 
-/** One row per round (oldest first, as exported), with a header row. */
+/**
+ * One row per round (oldest first, as exported), with a header row. The free-text cell is masked
+ * with redact(); enum, timestamp and label cells are written unchanged.
+ */
 export function toCsvExport(exp: SessionExport): string {
   const decisions = new Map<string, DecisionRecord>(exp.decisions.map((d) => [d.id, d]));
   const usage = usageByDecision(exp.usage ?? []);
@@ -187,16 +251,16 @@ export function toCsvExport(exp: SessionExport): string {
     const u = round.decisionId ? usage.get(round.decisionId) : undefined;
     const cells: Cell[] = [
       int(round.seq),
-      text(round.status),
-      text(round.committedAt),
-      text(round.settledAt),
-      text(round.source),
-      text(decision?.action ?? null),
-      text(decision?.explanation ?? null),
-      text(betsCell(round)),
+      label(round.status),
+      label(round.committedAt),
+      label(round.settledAt),
+      label(round.source),
+      label(decision?.action ?? null),
+      free(decision?.explanation ?? null),
+      label(betsCell(round)),
       money(round.totalStake),
       int(round.winningNumber),
-      text(round.winningNumber === null ? null : colorOf(round.winningNumber)),
+      label(round.winningNumber === null ? null : colorOf(round.winningNumber)),
       money(round.stakeReturned),
       money(round.winnings),
       money(round.totalReturned),
@@ -207,20 +271,11 @@ export function toCsvExport(exp: SessionExport): string {
       int(u?.outputTokens),
       int(u?.cachedTokens),
       usd(u?.costMicros),
-      text(u?.costBasis ?? null),
+      label(u?.costBasis ?? null),
     ];
     lines.push(cells.map(renderCell).join(','));
   }
-  const csv = `${lines.join('\r\n')}\r\n`;
-  // Final pass over the whole text. Some redact() rules may run past a comma or line break (e.g.
-  // "?key=…" stops only at & / whitespace / quotes), which would shift cells; keep the pass only
-  // when the sequence of CSV structure characters is unchanged. Every text cell was already
-  // redacted on its own above.
-  const final = redact(csv);
-  return final === csv || csvStructure(final) === csvStructure(csv) ? final : csv;
-}
-
-/** The quote / comma / CR / LF characters of a CSV text, in order (its cell and row structure). */
-function csvStructure(csv: string): string {
-  return (csv.match(/[",\r\n]/g) ?? []).join('');
+  // No pass over the finished text: the only free-text cell (decision_explanation) was masked on
+  // its own above, so cells and rows can never shift and enum / timestamp cells stay intact.
+  return `${lines.join('\r\n')}\r\n`;
 }

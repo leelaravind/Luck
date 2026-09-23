@@ -19,7 +19,9 @@ How the app uses it: Laya chooses exactly one of these **13 labels**
 There is no `stop` label — a classifier cannot end the session; you and the session limits do.
 The **app's adapter** turns a bet label into a single bet whose **stake is fixed at the session minimum**
 — Laya only picks the category. Every decision's explanation says so, e.g.
-`Laya classifier chose 'red' (p=0.31). Stake fixed at the session minimum by the adapter.`
+`Laya classifier chose 'red' (label probability 0.93, Laya confidence 0.85; raw, uncalibrated). Stake fixed at the session minimum by the adapter.`
+Both numbers are Laya's raw, uncalibrated scores (the label's probability and Laya's own confidence, which are
+different quantities); they describe how well the label fits the text, not a chance of winning.
 A label outside that list (including a returned `stop`) is rejected as invalid output; it is never turned into a
 stop or into some other bet.
 

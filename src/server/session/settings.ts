@@ -113,7 +113,12 @@ const LimitsShape = {
 } satisfies Record<keyof SessionLimits, z.ZodType>;
 
 const SessionLimitsSchema = z.strictObject(LimitsShape);
-const PartialLimitsSchema = z.strictObject(LimitsShape).partial();
+/**
+ * A partial limits object (create-session request, settings patch). Nothing is defaulted here: an
+ * omitted field must keep the saved default it is merged with — a `.default(false)` would silently
+ * turn a saved allowModelStop=true back off.
+ */
+const PartialLimitsSchema = z.strictObject({ ...LimitsShape, allowModelStop: z.boolean().optional() }).partial();
 
 const CreateSessionRequestSchema = z.strictObject({
   name: z.string().trim().max(80).optional(),
@@ -121,13 +126,21 @@ const CreateSessionRequestSchema = z.strictObject({
   limits: PartialLimitsSchema.optional(),
 });
 
+const pricingKey = z.string().min(3).max(260);
+/** Upper bound for the number of keys in pricingRemove / builtInPricingKeys. */
+const MAX_PRICING_KEYS = 1_000;
+
 const SettingsPatchSchema = z.strictObject({
   defaultLimits: PartialLimitsSchema.optional(),
   animationSpeed: z.enum(['normal', 'fast', 'instant']).optional(),
   roundPacingMs: z.int().min(0).max(MAX_ROUND_PACING_MS).optional(),
   reduceMotion: z.enum(['system', 'on', 'off']).optional(),
-  /** The COMPLETE map of the user's pricing entries (see saveSettings). */
-  pricing: z.record(z.string().min(3).max(260), PricingSchema).optional(),
+  /** Pricing entries MERGED key by key into the user's entries (see saveSettings). */
+  pricing: z.record(pricingKey, PricingSchema).optional(),
+  /** User pricing entries to delete (the only way to delete one). Built-in default keys are refused. */
+  pricingRemove: z.array(pricingKey).max(MAX_PRICING_KEYS).optional(),
+  /** Read-only (filled by the server); accepted so a client may send its settings back, then ignored. */
+  builtInPricingKeys: z.array(z.string().max(300)).max(MAX_PRICING_KEYS).optional(),
   players: z.partialRecord(z.enum(AI_PROVIDER_KINDS as unknown as [AiProviderKind, ...AiProviderKind[]]), PlayerConfigSchema).optional(),
 });
 
@@ -208,13 +221,22 @@ function defaultSettings(): AppSettings {
  * (older versions stored the whole merged map), so the current default is used for it instead.
  */
 function userPricingEntries(pricing: Readonly<Record<string, Pricing>> | undefined): Record<string, Pricing> {
-  const out: Record<string, Pricing> = {};
-  for (const [key, p] of Object.entries(pricing ?? {})) {
-    if (!p || typeof p !== 'object') continue;
-    if (p.source === 'default-assumption' && Object.hasOwn(DEFAULT_PRICING, key)) continue;
-    out[key] = p;
-  }
-  return out;
+  // Object.fromEntries defines own properties, so even a "__proto__" key can never set a prototype.
+  return Object.fromEntries(
+    Object.entries(pricing ?? {}).filter(
+      ([key, p]) => !!p && typeof p === 'object' && !(p.source === 'default-assumption' && isBuiltInPricingKey(key)),
+    ),
+  );
+}
+
+/** A key of the built-in default pricing assumptions (DEFAULT_PRICING): never deleted, only reset to its default. */
+export function isBuiltInPricingKey(key: string): boolean {
+  return Object.hasOwn(DEFAULT_PRICING, key);
+}
+
+/** Keys of the built-in default pricing rows (AppSettings.builtInPricingKeys). */
+export function builtInPricingKeys(): string[] {
+  return Object.keys(DEFAULT_PRICING);
 }
 
 function validRoundPacing(v: unknown): v is number {
@@ -243,6 +265,7 @@ export function loadSettings(repo: Repository): AppSettings {
     animationSpeed: stored.animationSpeed ?? base.animationSpeed,
     roundPacingMs: validRoundPacing(stored.roundPacingMs) ? stored.roundPacingMs : base.roundPacingMs,
     reduceMotion: stored.reduceMotion ?? base.reduceMotion,
+    builtInPricingKeys: builtInPricingKeys(),
     pricing: { ...base.pricing, ...userPricingEntries(stored.pricing) },
     players: { ...(stored.players ?? {}) },
   };
@@ -251,9 +274,15 @@ export function loadSettings(repo: Repository): AppSettings {
 /**
  * Apply a validated partial update and persist it. Returns the merged settings.
  *  - `players` entries are merged key by key (a patch never wipes another provider's config).
- *  - `pricing`, when present, is the COMPLETE map of the user's entries: a user entry that is not
- *    in it is deleted. Default assumptions cannot be deleted (they always come from
- *    DEFAULT_PRICING); sending one back unchanged — as the Settings form does — stores nothing.
+ *  - `pricing` entries are MERGED key by key into the user's entries: a row the patch does not
+ *    mention is kept, so a stale second tab can never delete rows it did not know about. Sending a
+ *    built-in default assumption back unchanged — as the Settings form does — stores nothing.
+ *  - `pricingRemove` is the only way to delete a row. Any key that is not a built-in default is
+ *    removed (whatever its `source`, e.g. an orphan 'default-assumption' row). For a built-in default
+ *    key it removes only the user's override, so the row goes back to the built-in default ("Reset to
+ *    default"); the default itself can never be deleted. Unknown keys are ignored (already gone).
+ *    Removals apply before `pricing`, so a key in both ends up with the entry from `pricing`.
+ *  - `builtInPricingKeys` is read-only and ignored.
  */
 export function saveSettings(repo: Repository, patch: unknown): AppSettings {
   const p = parseOrThrow(SettingsPatchSchema, patch ?? {}, 'settings');
@@ -268,7 +297,11 @@ export function saveSettings(repo: Repository, patch: unknown): AppSettings {
   if (p.animationSpeed) next.animationSpeed = p.animationSpeed;
   if (p.roundPacingMs !== undefined) next.roundPacingMs = p.roundPacingMs;
   if (p.reduceMotion) next.reduceMotion = p.reduceMotion;
-  if (p.pricing) next.pricing = userPricingEntries(p.pricing as Record<string, Pricing>);
+  if (p.pricing || p.pricingRemove) {
+    const removed = new Set(p.pricingRemove ?? []);
+    const kept = Object.fromEntries(Object.entries(userPricingEntries(stored.pricing)).filter(([key]) => !removed.has(key)));
+    next.pricing = { ...kept, ...userPricingEntries(p.pricing as Record<string, Pricing> | undefined) };
+  }
   if (p.players) {
     for (const [kind, cfg] of Object.entries(p.players)) {
       if (cfg && cfg.kind !== kind) {

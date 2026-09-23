@@ -6,7 +6,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import {
   GameError,
-  type AppSettings,
+  type AppSettingsPatch,
   type BetInput,
   type CreateSessionRequest,
   type PlayerConfig,
@@ -83,7 +83,7 @@ export function registerApiRoutes(app: FastifyInstance, deps: { config: AppConfi
   app.get('/api/settings', async () => service.getSettings());
 
   app.put('/api/settings', async (request) => {
-    const patch = settingsPatchBody.parse(request.body) as Partial<AppSettings>;
+    const patch = settingsPatchBody.parse(request.body) as AppSettingsPatch;
     return service.updateSettings(patch);
   });
 

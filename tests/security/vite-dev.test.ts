@@ -13,6 +13,11 @@
  *
  * Throw-away probe files live in tmp/vite-dev-<uuid>/ and are removed afterwards. The test server uses its
  * own cache folder and no dependency optimisation, so it never touches node_modules/.vite of a running dev server.
+ *
+ * Stability on a busy machine (the full suite runs many forks at once): beforeAll WARMS the server — it requests
+ * /, /main.tsx, /@vite/client and one src/shared module once, so the tests below hit already-transformed modules
+ * instead of cold Vite transforms — every test has an explicit, generous timeout, and each request uses its own
+ * connection (no keep-alive socket reuse, which can race with the server closing an idle socket → ECONNRESET).
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -43,18 +48,45 @@ interface Reply {
 let server: ViteDevServer | undefined;
 let port = 0;
 
+/** Per-request limit; the tests and hooks have larger budgets, so one slow request never exceeds them. */
+const REQUEST_TIMEOUT_MS = 45_000;
+/** Budgets for the hooks and the tests (generous: cold Vite transforms during a loaded full-suite run). */
+const HOOK_TIMEOUT_MS = 120_000;
+const HTTP_TEST_TIMEOUT_MS = 120_000;
+const LOCAL_TEST_TIMEOUT_MS = 60_000;
+
 function get(urlPath: string, headers: Record<string, string> = {}, method = 'GET'): Promise<Reply> {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path: urlPath, method, headers: { Accept: '*/*', ...headers } }, (res) => {
+    // agent: false → a fresh connection per request (no keep-alive reuse of a socket the server may be closing)
+    const req = http.request({ host: '127.0.0.1', port, path: urlPath, method, agent: false, headers: { Accept: '*/*', ...headers } }, (res) => {
       const chunks: Buffer[] = [];
       res.on('data', (c: Buffer) => chunks.push(c));
       res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks).toString('latin1') }));
       res.on('error', reject);
     });
     req.on('error', reject);
-    req.setTimeout(45_000, () => req.destroy(new Error(`timeout: ${method} ${urlPath}`)));
+    req.setTimeout(REQUEST_TIMEOUT_MS, () => req.destroy(new Error(`timeout: ${method} ${urlPath}`)));
     req.end();
   });
+}
+
+/**
+ * Request each URL once so Vite transforms (and caches) it before the tests run. Best effort: a failed or slow
+ * request is retried until `deadline`, and a URL that still fails is left to the tests, which report it with their
+ * own assertions. Nothing is asserted here.
+ */
+async function warmUp(urls: { path: string; accept?: string }[], deadline: number): Promise<void> {
+  for (const u of urls) {
+    while (Date.now() < deadline) {
+      try {
+        const r = await get(u.path, u.accept ? { Accept: u.accept } : {});
+        if (r.status === 200) break;
+      } catch {
+        // timeout / connection reset under load: try again while there is time
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
 }
 
 describe('SECURITY: Vite dev server (real vite.config.ts, ephemeral port)', () => {
@@ -63,6 +95,8 @@ describe('SECURITY: Vite dev server (real vite.config.ts, ephemeral port)', () =
   const probeText = path.join(SCRATCH, 'data', 'notes.txt');
 
   beforeAll(async () => {
+    // the warm-up stops retrying 15 s before the hook budget runs out
+    const deadline = Date.now() + HOOK_TIMEOUT_MS - 15_000;
     mkdirSync(path.dirname(probeDb), { recursive: true });
     writeFileSync(probeDb, `${SQLITE_MAGIC}\0${PROBE_MARKER} throw-away probe, not a real database`);
     writeFileSync(probeWal, `${PROBE_MARKER} wal`);
@@ -77,13 +111,22 @@ describe('SECURITY: Vite dev server (real vite.config.ts, ephemeral port)', () =
     });
     await server.listen();
     port = (server.httpServer!.address() as AddressInfo).port;
-  }, 60_000);
+    await warmUp(
+      [
+        { path: '/', accept: 'text/html' },
+        { path: '/main.tsx' },
+        { path: '/@vite/client' },
+        { path: fsUrl(path.join(REPO_ROOT, 'src', 'shared', 'contracts.ts')) },
+      ],
+      deadline,
+    );
+  }, HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     // never let a slow close hang the suite; the server is ours and on an ephemeral port
     await Promise.race([server?.close(), new Promise((r) => setTimeout(r, 20_000).unref())]);
     rmSync(SCRATCH, { recursive: true, force: true });
-  }, 30_000);
+  }, HOOK_TIMEOUT_MS);
 
   it('uses the hardened settings (cors off, strict fs, explicit allow list)', () => {
     const cfg = server!.config;
@@ -95,7 +138,7 @@ describe('SECURITY: Vite dev server (real vite.config.ts, ephemeral port)', () =
       [`${ROOT}/node_modules`, `${ROOT}/src/shared`, `${ROOT}/src/web`].map((d) => d.toLowerCase()).sort(),
     );
     expect(slash(cfg.root).toLowerCase()).toBe(`${ROOT}/src/web`.toLowerCase());
-  });
+  }, LOCAL_TEST_TIMEOUT_MS);
 
   it('GET /@fs/<repo>/data/luck.db is refused and never returns database bytes (audit repro)', async () => {
     const realDb = path.join(REPO_ROOT, 'data', 'luck.db');
@@ -104,7 +147,7 @@ describe('SECURITY: Vite dev server (real vite.config.ts, ephemeral port)', () =
     expect(r.headers['access-control-allow-origin']).toBeUndefined();
     // Vite answers 403 for a readable denied file; without a local database it falls through to 404/index.html.
     if (existsSync(realDb)) expect(r.status).toBe(403);
-  });
+  }, HTTP_TEST_TIMEOUT_MS);
 
   it('throw-away database, WAL and data files under tmp/…/data/ → 403 without their content', async () => {
     for (const file of [probeDb, probeWal, probeText]) {
@@ -122,7 +165,7 @@ describe('SECURITY: Vite dev server (real vite.config.ts, ephemeral port)', () =
       expect(r.body.includes(SQLITE_MAGIC), p).toBe(false);
       if (r.status === 200) expect(r.headers['content-type'], p).toMatch(/text\/html/);
     }
-  });
+  }, HTTP_TEST_TIMEOUT_MS);
 
   it('files outside src/web, src/shared and node_modules → 403 (.env.example, package.json, server code, .git)', async () => {
     const outside = [
@@ -138,7 +181,7 @@ describe('SECURITY: Vite dev server (real vite.config.ts, ephemeral port)', () =
       const r = await get(fsUrl(file));
       expect(r.status, file).toBe(403);
     }
-  });
+  }, HTTP_TEST_TIMEOUT_MS);
 
   it('no CORS grant for another local origin (GET and preflight)', async () => {
     for (const origin of ['http://127.0.0.1:9999', 'http://localhost:9999', 'http://evil.example']) {
@@ -149,7 +192,7 @@ describe('SECURITY: Vite dev server (real vite.config.ts, ephemeral port)', () =
       expect(pre.headers['access-control-allow-origin'], origin).toBeUndefined();
       expect(pre.headers['access-control-allow-methods'], origin).toBeUndefined();
     }
-  });
+  }, HTTP_TEST_TIMEOUT_MS);
 
   it('the app is still served: index.html, /main.tsx, the src/shared modules it imports, dev headers', async () => {
     const index = await get('/', { Accept: 'text/html' });
@@ -168,7 +211,7 @@ describe('SECURITY: Vite dev server (real vite.config.ts, ephemeral port)', () =
 
     const client = await get('/@vite/client');
     expect(client.status).toBe(200);
-  }, 120_000);
+  }, HTTP_TEST_TIMEOUT_MS);
 });
 
 describe('SECURITY: Vite fs deny list is anchored to the checkout (Vite matcher, no server)', () => {
@@ -214,5 +257,5 @@ describe('SECURITY: Vite fs deny list is anchored to the checkout (Vite matcher,
     expect(allowed('src/web/.env.local')).toBe(false);
     expect(allowed('node_modules/pkg/key.pem')).toBe(false);
     expect(allowed('node_modules/pkg/.git/config')).toBe(false);
-  });
+  }, LOCAL_TEST_TIMEOUT_MS);
 });

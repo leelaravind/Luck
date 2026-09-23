@@ -33,6 +33,20 @@ describe('api client', () => {
     expect(JSON.parse(String(calls[1]!.init.body))).toEqual({ animationSpeed: 'fast' });
   });
 
+  it('sends pricing edits and pricingRemove, but never the read-only builtInPricingKeys', async () => {
+    const { fn, calls } = mockFetch([{ status: 200, body: {} }]);
+    const api = createApiClient({ fetch: fn });
+    await api.updateSettings({
+      pricing: { 'ollama:fixture-model': { inputPerMTokUsd: 0, outputPerMTokUsd: 0, source: 'user' } },
+      pricingRemove: ['anthropic:fixture-model'],
+      builtInPricingKeys: ['openai:fixture-default'],
+    });
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      pricing: { 'ollama:fixture-model': { inputPerMTokUsd: 0, outputPerMTokUsd: 0, source: 'user' } },
+      pricingRemove: ['anthropic:fixture-model'],
+    });
+  });
+
   it('adds a fresh Idempotency-Key to create / rounds / control and reuses a supplied one', async () => {
     const { fn, calls } = mockFetch([{ status: 200, body: {} }]);
     let n = 0;

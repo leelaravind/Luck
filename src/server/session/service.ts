@@ -149,17 +149,37 @@ function redactDecisionText<T extends Partial<DecisionRecord>>(d: T): T {
   return out;
 }
 
-/** Mask secrets in every string of an export (a final pass; stored text is already masked). */
-function redactDeep<T>(value: T): T {
-  if (typeof value === 'string') return redact(value) as T;
-  if (Array.isArray(value)) return value.map((v) => redactDeep(v)) as T;
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = redactDeep(v);
-    return out as T;
+/**
+ * Mask secrets in the provider-supplied text of a usage record before it is stored or emitted: the
+ * model the provider reported (an echoing provider can put anything there) and the rate-limit
+ * header names / values.
+ */
+function redactUsageRecord(rec: UsageRecord): UsageRecord {
+  const clean: UsageRecord = { ...rec, model: typeof rec.model === 'string' ? redact(rec.model) : null };
+  if (rec.rateLimit) {
+    clean.rateLimit = {
+      ...rec.rateLimit,
+      entries: rec.rateLimit.entries.map((e) => {
+        const out = { ...e, name: redact(String(e.name)) };
+        if (typeof e.status === 'string') out.status = redact(e.status);
+        if (typeof e.resetAt === 'string') out.resetAt = redact(e.resetAt);
+        return out;
+      }),
+    };
   }
-  return value;
+  return clean;
 }
+
+/** Mask secrets in every provider-supplied string of a connection test (message, version, model ids). */
+function redactConnectionTest(result: ConnectionTestResult): ConnectionTestResult {
+  const clean: ConnectionTestResult = { ...result, message: redact(String(result.message ?? '')) };
+  if (typeof result.version === 'string') clean.version = redact(result.version);
+  else delete clean.version;
+  if (Array.isArray(result.models)) clean.models = result.models.map((m) => redact(String(m)));
+  else delete clean.models;
+  return clean;
+}
+
 
 /** Canonical "key=stake" signature of a bet slip (identical positions merged), or null when unreadable. */
 function slipSignature(bets: readonly { key?: string; stake: number }[] | unknown): string | null {
@@ -313,9 +333,10 @@ export function createGameService(deps: GameServiceDeps): GameService {
     },
 
     insertUsage(rec) {
-      repo.insertUsage(rec);
-      emit(rec.sessionId, { type: 'usage', usage: rec });
-      return rec;
+      const clean = redactUsageRecord(rec);
+      repo.insertUsage(clean);
+      emit(clean.sessionId, { type: 'usage', usage: clean });
+      return clean;
     },
 
     trackLate<T>(sessionId: string, promise: Promise<T>, onSettle: (value: T | null) => void) {
@@ -463,7 +484,9 @@ export function createGameService(deps: GameServiceDeps): GameService {
           t.done();
         }
       }
-      const clean: ConnectionTestResult = { ...result, message: redact(result.message) };
+      // Provider-supplied text (message, version, the model list the UI offers): masked before it is
+      // returned or cached for GET /api/providers (lastTest).
+      const clean = redactConnectionTest(result);
       lastTests.set(adapter.kind, clean);
       return clean;
     },
@@ -490,7 +513,10 @@ export function createGameService(deps: GameServiceDeps): GameService {
     },
 
     updateSettings(patch) {
-      return saveSettings(repo, patch);
+      const saved = saveSettings(repo, patch);
+      // A wait between rounds in progress picks up a changed roundPacingMs at once.
+      runners.settingsChanged();
+      return saved;
     },
 
     listSessions() {
@@ -646,7 +672,9 @@ export function createGameService(deps: GameServiceDeps): GameService {
       if (format !== 'json' && format !== 'csv') throw new GameError('validation_error', 'format must be json or csv');
       // Final masking pass over every string (stored text is masked already; this also covers rows
       // written by older versions). Done on the data, not the serialised body, so JSON/CSV stay valid.
-      const data: SessionExport = redactDeep(repo.exportSession(sessionId));
+      // Masking happens field by field in db/export.ts (free-text fields and URL query strings only),
+      // so ids, kinds, statuses and timestamps are never altered.
+      const data: SessionExport = repo.exportSession(sessionId);
       const date = nowIso().slice(0, 10);
       const safeId = sessionId.replace(/[^A-Za-z0-9-]/g, '');
       return format === 'json'
@@ -698,7 +726,7 @@ export function createGameService(deps: GameServiceDeps): GameService {
           const already = repo.listUsage(d.sessionId).some((u) => u.decisionId === d.id && u.attempt === d.attempts);
           if (!already) {
             const paid = adapters.get(d.providerKind)?.capabilities.paid ?? true;
-            repo.insertUsage({
+            repo.insertUsage(redactUsageRecord({
               id: randomUUID(),
               sessionId: d.sessionId,
               decisionId: d.id,
@@ -719,7 +747,7 @@ export function createGameService(deps: GameServiceDeps): GameService {
               costBasis: paid ? 'unknown' : 'local-no-charge',
               rateLimit: null,
               createdAt: nowIso(),
-            });
+            }));
           }
         }
         core.log(d.sessionId, 'warn', 'recovery_decision', `Decision for round ${d.roundNumber} was interrupted by a restart`);

@@ -30,6 +30,8 @@
  *    duration_api_ms (the totals still advance), to exercise an unknown baseline.
  *  - FAKE_CLAUDE_RESET_TOTALS_ON_TURN=<n>: the running totals restart from zero on conversation turn n
  *    (a resumed transcript without saved totals).
+ *  - FAKE_CLAUDE_API_RETRIES=<n> (scenario ok): emits n `system/api_retry` events before the
+ *    successful result (the CLI's own API retries that then succeeded).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -252,6 +254,9 @@ function run() {
   switch (scenario) {
     case 'ok':
       init();
+      for (let i = 1; i <= Number(env.FAKE_CLAUDE_API_RETRIES ?? 0); i++) {
+        emit({ type: 'system', subtype: 'api_retry', attempt: i, max_retries: 1, retry_delay_ms: 10, error_status: 529, error: 'overloaded' });
+      }
       okResult();
       exitAfterFlush(0);
       break;

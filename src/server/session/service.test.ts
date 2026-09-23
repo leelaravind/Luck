@@ -454,16 +454,18 @@ describe('autonomous AI runner (fake adapter fixtures)', () => {
     const normal = await runWith({ animationSpeed: 'normal' });
     const instant = await runWith({ animationSpeed: 'instant' });
     const fast = await runWith({ animationSpeed: 'fast' });
+    // 4 rounds → 3 waits between them. The last round reaches maxRounds, so the session completes at
+    // once: no pacing wait after it (no further decision needs one).
     for (const r of [normal, instant, fast]) {
       expect(r.calls).toBe(4);
-      expect(r.sleeps).toEqual([DEFAULT_ROUND_PACING_MS, DEFAULT_ROUND_PACING_MS, DEFAULT_ROUND_PACING_MS, DEFAULT_ROUND_PACING_MS]);
+      expect(r.sleeps).toEqual([DEFAULT_ROUND_PACING_MS, DEFAULT_ROUND_PACING_MS, DEFAULT_ROUND_PACING_MS]);
     }
     expect(DEFAULT_ROUND_PACING_MS).toBe(7_000);
-    // Changing roundPacingMs does change it (0 = no wait), with the same one call per round.
+    // Changing roundPacingMs does change it (0 = no wait at all), with the same one call per round.
     const quick = await runWith({ animationSpeed: 'normal', roundPacingMs: 250 });
-    expect(quick).toEqual({ calls: 4, sleeps: [250, 250, 250, 250] });
+    expect(quick).toEqual({ calls: 4, sleeps: [250, 250, 250] });
     const none = await runWith({ roundPacingMs: 0 });
-    expect(none).toEqual({ calls: 4, sleeps: [0, 0, 0, 0] });
+    expect(none).toEqual({ calls: 4, sleeps: [] });
   });
 
   it('with allowModelStop, model "stop" completes the session with model_stop; "skip" plays a no-bet round', async () => {
@@ -945,6 +947,71 @@ describe('decision records (fake adapter fixtures)', () => {
       clearRegisteredSecrets();
     }
   });
+
+  it('#33 (V3): an echoing provider cannot leak the key via the connection-test model list / version or the usage record model', async () => {
+    const SECRET = 'EchoFixtureKey-test-4b3a2c1d0e'; // registered like a key from .env (no known key shape)
+    registerSecret(SECRET);
+    try {
+      const adapter = fakeAdapter();
+      adapter.fallback = () =>
+        okDecision(
+          { action: 'bet', bets: [{ type: 'red', stake: 100 }] },
+          {
+            modelReported: `fake-model ${SECRET}`,
+            rateLimit: {
+              source: 'response-headers',
+              capturedAt: '2026-09-23T12:00:00.000Z',
+              entries: [{ name: `x-ratelimit-${SECRET}`, remaining: 5, status: `allowed ${SECRET}`, resetAt: SECRET }],
+            },
+          },
+        );
+      adapter.testConnection = async () => ({
+        ok: true,
+        testedAt: '2026-09-23T12:00:00.000Z',
+        latencyMs: 1,
+        message: `hello ${SECRET}`,
+        version: `v1 ${SECRET}`,
+        models: ['fake-model', `leak-${SECRET}`, `upper-${SECRET.toUpperCase()}`],
+      });
+      const h = harness({ adapters: [adapter] });
+      const s = createAi(h, { maxRounds: 1 });
+      const events: ServerEvent[] = [];
+      h.service.subscribe(s.id, (e) => events.push(e));
+      await h.service.control(s.id, 'start', h.key());
+      await waitUntil(() => status(h, s.id) === 'completed', 'completed');
+
+      // POST /api/providers/:kind/test and the lastTest cached for GET /api/providers.
+      const test = await h.service.testProvider('ollama');
+      expect(test).toMatchObject({
+        ok: true,
+        message: 'hello [redacted]',
+        version: 'v1 [redacted]',
+        models: ['fake-model', 'leak-[redacted]', 'upper-[redacted]'],
+      });
+      expect(h.service.listProviders().find((p) => p.kind === 'ollama')!.lastTest).toEqual(test);
+
+      // GET /api/sessions/:id/usage: the stored record itself is masked (not only the export).
+      const [stored] = h.repo.listUsage(s.id);
+      expect(stored!.model).toBe('fake-model [redacted]');
+      expect(stored!.rateLimit!.entries[0]).toEqual({ name: 'x-ratelimit-[redacted]', remaining: 5, status: 'allowed [redacted]', resetAt: '[redacted]' });
+      expect(h.service.getUsage(s.id).records).toEqual([stored]);
+      const emitted = events.filter((e) => e.type === 'usage');
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]).toMatchObject({ usage: { model: 'fake-model [redacted]' } });
+
+      const everything = [
+        JSON.stringify(test),
+        JSON.stringify(h.service.listProviders()),
+        JSON.stringify(h.repo.listUsage(s.id)),
+        JSON.stringify(h.repo.exportSession(s.id)), // what is stored
+        JSON.stringify(events),
+        JSON.stringify(h.service.getSnapshot(s.id)),
+      ].join('\n');
+      expect(everything.toLowerCase()).not.toContain(SECRET.toLowerCase());
+    } finally {
+      clearRegisteredSecrets();
+    }
+  });
 });
 
 describe('consecutive failures (fake adapter fixtures)', () => {
@@ -1063,5 +1130,18 @@ describe('input validation', () => {
       'claude-sonnet-4-6[1m]',
     );
     expect(h.service.createSession({ player: { kind: 'ollama', model: '-weird:tag' } }, h.key()).session.player.model).toBe('-weird:tag');
+  });
+
+  it('a create-session request with a partial "limits" object keeps the saved defaults it omits (allowModelStop stays true)', () => {
+    const h = harness();
+    h.service.updateSettings({ defaultLimits: { ...DEFAULT_LIMITS, allowModelStop: true, maxConsecutiveFailures: 3 } });
+    const s = h.service.createSession({ player: { kind: 'demo' }, limits: { maxRounds: 1 } }, h.key()).session;
+    expect(s.limits).toMatchObject({ allowModelStop: true, maxConsecutiveFailures: 3, maxRounds: 1 });
+    // Sent explicitly, the request still wins.
+    const off = h.service.createSession({ player: { kind: 'demo' }, limits: { maxRounds: 1, allowModelStop: false } }, h.key()).session;
+    expect(off.limits.allowModelStop).toBe(false);
+    // Without any saved default, an omitted allowModelStop is false (DEFAULT_LIMITS).
+    const fresh = harness();
+    expect(fresh.service.createSession({ player: { kind: 'demo' }, limits: { maxRounds: 1 } }, fresh.key()).session.limits.allowModelStop).toBe(false);
   });
 });

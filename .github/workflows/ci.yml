@@ -21,8 +21,9 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
         # Latest 22 and 24, plus the exact minimum versions from package.json "engines"
-        # (^22.22.2 || >=24.15.0), so the oldest supported releases are really tested.
-        node: ['22.22.2', '22.x', '24.15.0', '24.x']
+        # (^22.22.2 || ^24.15.0 || >=26.0.0), so the oldest supported releases are really tested.
+        # 26+ is allowed by "engines" (the test tools support it) but is not part of this matrix.
+        node: ['22.22.2', '22.x', '24.15.0', '24.x', '26.x']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

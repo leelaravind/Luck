@@ -8,6 +8,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   AppSettings,
+  AppSettingsPatch,
   DecisionRecord,
   ProviderStatus,
   RoundRecord,
@@ -83,8 +84,10 @@ interface World {
   /** Response for POST /rounds (default 404). */
   roundResponse?: { status: number; body: unknown };
   posts?: string[];
-  /** Bodies of PUT /api/settings (the fixture merges them into `settings`). */
+  /** Bodies of PUT /api/settings (the fixture applies them to `settings` like the server contract). */
   settingsPuts?: unknown[];
+  /** Number of GET /api/settings requests. */
+  settingsGets?: number;
   /** Number of GET /api/sessions requests. */
   sessionListGets?: number;
 }
@@ -103,17 +106,21 @@ function makeFetch(world: World) {
     if (url === '/api/health') return json({ ok: true, version: 'test' });
     if (url === '/api/providers') return json({ providers: world.providers });
     if (url === '/api/settings' && method === 'PUT') {
-      const body = JSON.parse(String(init?.body)) as Partial<AppSettings>;
+      const body = JSON.parse(String(init?.body)) as AppSettingsPatch;
       world.settingsPuts?.push(body);
-      const defaults = Object.entries(world.settings.pricing).filter(([, p]) => p.source === 'default-assumption');
-      world.settings = {
-        ...world.settings,
-        ...body,
-        pricing: body.pricing ? { ...Object.fromEntries(defaults), ...body.pricing } : world.settings.pricing,
-      };
+      // The AppSettingsPatch contract: pricing entries are MERGED key by key; deletions only through
+      // pricingRemove; built-in keys are never removed; builtInPricingKeys is read-only.
+      const { pricing, pricingRemove, builtInPricingKeys: _readOnly, ...rest } = body;
+      const builtIn = new Set(world.settings.builtInPricingKeys ?? []);
+      const nextPricing = { ...world.settings.pricing, ...(pricing ?? {}) };
+      for (const key of pricingRemove ?? []) if (!builtIn.has(key)) delete nextPricing[key];
+      world.settings = { ...world.settings, ...rest, pricing: nextPricing };
       return json(world.settings);
     }
-    if (url === '/api/settings') return json(world.settings);
+    if (url === '/api/settings') {
+      world.settingsGets = (world.settingsGets ?? 0) + 1;
+      return json(world.settings);
+    }
     if (url === '/api/sessions' && method === 'GET') {
       world.sessionListGets = (world.sessionListGets ?? 0) + 1;
       return json({ sessions: world.sessions });
@@ -609,16 +616,10 @@ describe('App audit fixes (fixture server)', () => {
     expect(within(picker).getByRole('option', { name: /Fixture session · Running/ })).toBeTruthy();
   });
 
-  it('settings: pause between rounds is saved as roundPacingMs, hints are accurate, pricing removals are sent (#4, #36)', async () => {
+  it('settings: pause between rounds is saved as roundPacingMs, hints are accurate, only changed fields are sent (#4)', async () => {
     const world: World = {
       providers: [],
-      settings: {
-        ...SETTINGS,
-        pricing: {
-          'openai:default-model': { inputPerMTokUsd: 1, outputPerMTokUsd: 2, source: 'default-assumption', asOf: '2026-01-01' },
-          'anthropic:my-model': { inputPerMTokUsd: 3, outputPerMTokUsd: 15, source: 'user', asOf: '2026-09-01' },
-        },
-      },
+      settings: SETTINGS,
       sessions: [],
       snapshot: fixtureSnapshot(fixtureSession(), []),
       rounds: [],
@@ -637,12 +638,6 @@ describe('App audit fixes (fixture server)', () => {
     );
     expect(text).not.toContain('does not change how often');
 
-    // Default assumptions cannot be removed; user entries can.
-    const removeButtons = screen.getAllByRole('button', { name: /^Remove/ });
-    expect(removeButtons).toHaveLength(1);
-    expect(removeButtons[0]!.textContent).toBe('Remove anthropic:my-model');
-    fireEvent.click(removeButtons[0]!);
-
     // Invalid pause: error shown, save blocked.
     fireEvent.change(pacing, { target: { value: 'soon' } });
     expect(screen.getByText(/Enter seconds from 0 to 600/)).toBeTruthy();
@@ -651,23 +646,124 @@ describe('App audit fixes (fixture server)', () => {
     fireEvent.change(pacing, { target: { value: '2.5' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     await waitFor(() => expect(world.settingsPuts).toHaveLength(1));
-    const put = world.settingsPuts![0] as Partial<AppSettings>;
-    expect(put.roundPacingMs).toBe(2500);
-    // Exactly the rows listed (the server treats the map as the complete set): the removed entry is gone.
-    expect(put.pricing).toEqual({
-      'openai:default-model': { inputPerMTokUsd: 1, outputPerMTokUsd: 2, source: 'default-assumption', asOf: '2026-01-01' },
-    });
-    expect(put.pricing).not.toHaveProperty(['anthropic:my-model']);
-    // After the save the removed row does not come back; the default assumption is still listed.
+    // Only what changed: no limits, display fields or pricing map ride along.
+    expect(world.settingsPuts![0]).toEqual({ roundPacingMs: 2500 });
     await waitFor(() =>
       expect((screen.getByLabelText('Pause between autonomous rounds (seconds)') as HTMLInputElement).value).toBe('2.5'),
     );
-    expect(screen.queryByText('anthropic:my-model')).toBeNull();
-    expect(screen.getByText('openai:default-model')).toBeTruthy();
 
     // An unchanged pause is not re-sent on the next save.
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     await waitFor(() => expect(world.settingsPuts).toHaveLength(2));
     expect(world.settingsPuts![1]).not.toHaveProperty('roundPacingMs');
+  });
+
+  it('settings pricing: Remove is offered by key (not source), is sent as pricingRemove, and a removed row stays removed after reload (#36)', async () => {
+    const world: World = {
+      providers: [],
+      settings: {
+        ...SETTINGS,
+        pricing: {
+          'openai:default-model': { inputPerMTokUsd: 1, outputPerMTokUsd: 2, source: 'default-assumption', asOf: '2026-01-01' },
+          'anthropic:my-model': { inputPerMTokUsd: 3, outputPerMTokUsd: 15, source: 'user', asOf: '2026-09-01' },
+          // A default-assumption row whose key is not a built-in default (e.g. left by an older version).
+          'openai:orphan-fixture-default': { inputPerMTokUsd: 4, outputPerMTokUsd: 8, source: 'default-assumption', asOf: '2025-01-01' },
+        },
+        builtInPricingKeys: ['openai:default-model'],
+      },
+      sessions: [],
+      snapshot: fixtureSnapshot(fixtureSession(), []),
+      rounds: [],
+      usage: [],
+      settingsPuts: [],
+    };
+    const api = createApiClient({ fetch: makeFetch(world) });
+    render(<App api={api} />);
+    await screen.findByText('No sessions yet. Create one with “New session”.');
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    await screen.findByText('openai:orphan-fixture-default', { selector: 'legend' });
+
+    // The built-in row has no Remove; the user row and the orphan default-assumption row do.
+    const removeButtons = screen.getAllByRole('button', { name: /^Remove/ });
+    expect(removeButtons.map((b) => b.getAttribute('aria-label'))).toEqual(['Remove anthropic:my-model', 'Remove openai:orphan-fixture-default']);
+    expect(screen.queryByRole('button', { name: 'Remove openai:default-model' })).toBeNull();
+    expect(screen.getByText('default assumption (not built in)')).toBeTruthy();
+    expect(screen.getByText(/Built-in default assumptions come with the app and cannot be removed/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove anthropic:my-model' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove openai:orphan-fixture-default' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(world.settingsPuts).toHaveLength(1));
+    // Explicit deletions, no complete map (and never the read-only builtInPricingKeys).
+    expect(world.settingsPuts![0]).toEqual({ pricingRemove: ['anthropic:my-model', 'openai:orphan-fixture-default'] });
+    expect(Object.keys(world.settings.pricing)).toEqual(['openai:default-model']);
+    await waitFor(() => expect(screen.queryByText('anthropic:my-model')).toBeNull());
+    expect(screen.queryByText('openai:orphan-fixture-default')).toBeNull();
+    expect(screen.getByText('openai:default-model')).toBeTruthy();
+
+    // Reload the page: the removed rows stay removed; the built-in row is still listed, still without Remove.
+    cleanup();
+    render(<App api={createApiClient({ fetch: makeFetch(world) })} />);
+    await screen.findByText('openai:default-model', { selector: 'legend' }); // the drawer re-opens on Settings (remembered per browser)
+    expect(screen.queryByText('anthropic:my-model')).toBeNull();
+    expect(screen.queryByText('openai:orphan-fixture-default')).toBeNull();
+    expect(screen.queryAllByRole('button', { name: /^Remove/ })).toHaveLength(0);
+  });
+
+  it('settings freshness: opening the panel re-reads the settings, and a stale tab cannot overwrite what it did not change', async () => {
+    const mine = { inputPerMTokUsd: 3, outputPerMTokUsd: 15, source: 'user' as const, asOf: '2026-09-01' };
+    const world: World = {
+      providers: [],
+      settings: { ...SETTINGS, pricing: { 'anthropic:my-model': mine } },
+      sessions: [],
+      snapshot: fixtureSnapshot(fixtureSession(), []),
+      rounds: [],
+      usage: [],
+      settingsPuts: [],
+    };
+    render(<App api={createApiClient({ fetch: makeFetch(world) })} />);
+    await screen.findByText('No sessions yet. Create one with “New session”.');
+    const loads = world.settingsGets ?? 0;
+    expect(loads).toBe(1); // the bootstrap read
+
+    // Another tab (or an API client) adds a row after this tab loaded. Opening Settings re-reads them.
+    const other = { inputPerMTokUsd: 1, outputPerMTokUsd: 1, source: 'user' as const, asOf: '2026-09-20' };
+    world.settings = { ...world.settings, pricing: { ...world.settings.pricing, 'openai:other-tab-fixture': other } };
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    await screen.findByText('openai:other-tab-fixture', { selector: 'legend' });
+    expect(world.settingsGets).toBe(loads + 1);
+
+    // With unsaved edits, a focus does not re-read (the edits would be replaced)...
+    const pacing = screen.getByLabelText('Pause between autonomous rounds (seconds)') as HTMLInputElement;
+    fireEvent.change(pacing, { target: { value: '3' } });
+    const later = { inputPerMTokUsd: 2, outputPerMTokUsd: 2, source: 'user' as const, asOf: '2026-09-21' };
+    world.settings = {
+      ...world.settings,
+      animationSpeed: 'fast',
+      pricing: { ...world.settings.pricing, 'ollama:later-fixture': later },
+    };
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(world.settingsGets).toBe(loads + 1);
+    expect(pacing.value).toBe('3');
+    expect(screen.queryByText('ollama:later-fixture')).toBeNull();
+
+    // ...and the save sends only that edit: the row and the speed saved elsewhere survive.
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(world.settingsPuts).toHaveLength(1));
+    expect(world.settingsPuts![0]).toEqual({ roundPacingMs: 3000 });
+    expect(Object.keys(world.settings.pricing).sort()).toEqual(['anthropic:my-model', 'ollama:later-fixture', 'openai:other-tab-fixture']);
+    expect(world.settings.animationSpeed).toBe('fast');
+    // The save's response brings the form up to date.
+    await screen.findByText('ollama:later-fixture', { selector: 'legend' });
+
+    // Nothing unsaved now: a focus re-reads the settings.
+    world.settings = { ...world.settings, pricing: { ...world.settings.pricing, 'anthropic:focus-fixture': later } };
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await screen.findByText('anthropic:focus-fixture', { selector: 'legend' });
+    expect(world.settingsGets).toBe(loads + 2);
   });
 });

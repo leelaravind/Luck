@@ -8,7 +8,10 @@
  *   3. folders that are not a git repository, and a run without git on PATH (a ZIP download): the scanner
  *      falls back to walk mode with a notice instead of failing;
  *   4. this repository — git mode in a clone (read-only `git ls-files`), walk mode in a ZIP download — which
- *      must be clean, and whose walk-mode file list must equal git's.
+ *      must be clean, and whose walk-mode file list must equal git's;
+ *   5. folders inside an enclosing repository they do not belong to (ignored there, or with no tracked file) and
+ *      a repository where git lists 0 files: walk mode with a notice, so planted secrets are found instead of a
+ *      false "clean — 0 files scanned".
  *
  * Every planted secret is ASSEMBLED AT RUNTIME from fragments and a fixed pseudo-random generator, so this
  * source file itself never contains a string the scanner would flag.
@@ -456,5 +459,111 @@ describe('SECURITY: secret-scan.mjs outside a git repository (ZIP download) fall
     const r = runScanner(['--root', path.join(REPO_ROOT, 'scripts'), '--json']);
     expect(r.stderr).not.toMatch(/notice/);
     expect((JSON.parse(r.stdout) as Report).mode).toBe('git');
+  });
+});
+
+describe('SECURITY: secret-scan.mjs inside an enclosing repository it does not belong to → walk mode, never a false "clean"', () => {
+  const REASON_IGNORED = 'ignored by the enclosing git repository';
+  const REASON_UNTRACKED = 'no file in this folder is tracked by the enclosing git repository';
+  const REASON_NO_FILES = 'git lists no files in this folder';
+  const leak = (seed: number) => `const k = "${j('sk-', 'ant-', 'api03-', pseudoRandom(seed, 95))}";\n`;
+  const put = (root: string, rel: string, content: string) => {
+    const abs = path.join(root, rel);
+    mkdirSync(path.dirname(abs), { recursive: true });
+    writeFileSync(abs, content);
+  };
+  const git = (cwd: string, ...args: string[]) => {
+    const r = spawnSync('git', args, { cwd, encoding: 'utf8', env: NO_REPO_ENV });
+    expect(r.status, `git ${args.join(' ')}: ${r.stderr}`).toBe(0);
+  };
+  // Under this repository's tmp/ (gitignored): like a ZIP unpacked into another project's ignored folder.
+  const nestedInThisRepo = path.join(TMP_DIR, `scan-nested-ignored-${randomUUID()}`);
+  // Throw-away enclosing repositories (git init; files are only `git add`-ed, no commit needed).
+  const outer = path.join(TMP_DIR, `scan-outer-repo-${randomUUID()}`);
+  const excludeAll = path.join(TMP_DIR, `scan-exclude-all-${randomUUID()}`);
+
+  beforeAll(() => {
+    put(nestedInThisRepo, 'src/k.ts', leak(301));
+    put(nestedInThisRepo, 'README.md', '# unpacked fixture download\n');
+  });
+
+  afterAll(() => {
+    for (const d of [nestedInThisRepo, outer, excludeAll]) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('a folder inside an ignored path of the enclosing repository: planted secret found, notice printed (exit 1)', () => {
+    const human = runScanner(['--root', nestedInThisRepo]);
+    expect(human.status, human.stdout + human.stderr).toBe(1);
+    expect(human.stdout).not.toMatch(/clean/);
+    expect(human.stderr).toMatch(/secret-scan: notice — .*--no-git mode/);
+
+    const r = runScanner(['--root', nestedInThisRepo, '--json']);
+    expect(r.status).toBe(1);
+    const report = JSON.parse(r.stdout) as Report;
+    expect(report.mode).toBe('walk');
+    expect(report.filesListed).toBe(2);
+    expect(report.findings.map((f) => `${f.file} ${f.rule}`)).toEqual(['src/k.ts anthropic-api-key']);
+    // in a clone, tmp/ is ignored by this repository; in a ZIP download there is no repository at all
+    expect(report.fallbackReason).toBe(insideGitWorkTree(nestedInThisRepo) ? REASON_IGNORED : 'not a git repository');
+  });
+
+  it.skipIf(!GIT_INSTALLED)('ignored folder, untracked folder and tracked folder of a throw-away enclosing repository', () => {
+    put(outer, '.gitignore', 'ignored-dir/\n');
+    put(outer, 'README.md', '# enclosing fixture repository\n');
+    put(outer, 'ignored-dir/unpacked/src/k.ts', leak(302));
+    put(outer, 'untracked-dir/src/k.ts', leak(303));
+    put(outer, 'tracked-dir/a.ts', 'export const a = 1;\n');
+    put(outer, 'tracked-dir/b.ts', leak(304)); // untracked but not ignored: git mode lists it
+    git(outer, 'init', '-q');
+    git(outer, 'add', '.gitignore', 'README.md', 'tracked-dir/a.ts');
+
+    const scanJson = (rel: string) => {
+      const r = runScanner(['--root', path.join(outer, rel), '--json'], REPO_ROOT, NO_REPO_ENV);
+      return { status: r.status, stderr: r.stderr, report: JSON.parse(r.stdout) as Report };
+    };
+
+    const ignored = scanJson('ignored-dir/unpacked');
+    expect(ignored.status).toBe(1);
+    expect(ignored.report.mode).toBe('walk');
+    expect(ignored.report.fallbackReason).toBe(REASON_IGNORED);
+    expect(ignored.stderr).toMatch(/secret-scan: notice — ignored by the enclosing git repository/);
+    expect(ignored.report.findings.map((f) => `${f.file} ${f.rule}`)).toEqual(['src/k.ts anthropic-api-key']);
+
+    const untracked = scanJson('untracked-dir');
+    expect(untracked.status).toBe(1);
+    expect(untracked.report.mode).toBe('walk');
+    expect(untracked.report.fallbackReason).toBe(REASON_UNTRACKED);
+    expect(untracked.report.findings.map((f) => `${f.file} ${f.rule}`)).toEqual(['src/k.ts anthropic-api-key']);
+
+    // a folder that belongs to the repository keeps using git's list, without a notice
+    const tracked = scanJson('tracked-dir');
+    expect(tracked.status).toBe(1);
+    expect(tracked.report.mode).toBe('git');
+    expect(tracked.report.fallbackReason).toBeUndefined();
+    expect(tracked.stderr).not.toMatch(/notice/);
+    expect(tracked.report.findings.map((f) => `${f.file} ${f.rule}`)).toEqual(['b.ts anthropic-api-key']);
+
+    // and so does the repository's top folder (the ignored folder's secret is not published, so not reported)
+    const top = scanJson('.');
+    expect(top.report.mode).toBe('git');
+    expect(top.report.findings.map((f) => `${f.file} ${f.rule}`).sort()).toEqual(
+      ['tracked-dir/b.ts anthropic-api-key', 'untracked-dir/src/k.ts anthropic-api-key'].sort(),
+    );
+  });
+
+  it.skipIf(!GIT_INSTALLED)('git lists 0 files (everything excluded locally): walks the folder instead of printing "clean — 0 files"', () => {
+    mkdirSync(excludeAll, { recursive: true });
+    git(excludeAll, 'init', '-q');
+    // .git/info/exclude is local to this clone; the folder's own files would still be published from a copy
+    writeFileSync(path.join(excludeAll, '.git', 'info', 'exclude'), '*\n');
+    put(excludeAll, 'src/k.ts', leak(305));
+
+    const r = runScanner(['--root', excludeAll, '--json'], REPO_ROOT, NO_REPO_ENV);
+    expect(r.status, r.stderr).toBe(1);
+    expect(r.stderr).toMatch(/secret-scan: notice — git lists no files in this folder/);
+    const report = JSON.parse(r.stdout) as Report;
+    expect(report.mode).toBe('walk');
+    expect(report.fallbackReason).toBe(REASON_NO_FILES);
+    expect(report.findings.map((f) => `${f.file} ${f.rule}`)).toEqual(['src/k.ts anthropic-api-key']);
   });
 });

@@ -3,9 +3,14 @@
  * secret-scan.mjs — zero-dependency pre-commit secret scanner for this repository.
  *
  * Scans every file git would publish: tracked files plus untracked files that are NOT ignored
- * (`git ls-files --cached --others --exclude-standard`). When the folder is not a git repository (e.g. a
- * ZIP download) or git is not installed, it prints a notice and falls back to walking the folder while
- * honouring its .gitignore files (the --no-git mode), which gives the files a first commit would contain.
+ * (`git ls-files --cached --others --exclude-standard`). When git's list does not describe the folder, it prints a
+ * notice and falls back to walking the folder while honouring its own .gitignore files (the --no-git mode), which
+ * gives the files a first commit would contain. That happens when
+ *   - the folder is not a git repository (e.g. a ZIP download) or git is not installed / refuses the folder;
+ *   - the folder sits inside ANOTHER repository without belonging to it: it is ignored there (e.g. a ZIP unpacked
+ *     under that repository's ignored tmp/ folder, where git would list nothing and report a false "clean"), or
+ *     none of its files is tracked there;
+ *   - git lists no files at all for the folder.
  * Flags
  *   - high-confidence credential patterns (Anthropic, OpenAI-style "sk-", GitHub, AWS, Slack, PEM private
  *     keys, and generic `api_key = '<long random>'` assignments), and
@@ -16,7 +21,7 @@
  *   node scripts/secret-scan.mjs [--root <dir>] [--no-git] [--json]
  *     --root <dir>  directory to scan (default: current working directory)
  *     --no-git      walk the directory instead of asking git, skipping .git/, node_modules/ and whatever the
- *                   folder's .gitignore files ignore (automatic when the folder is not a git repository)
+ *                   folder's .gitignore files ignore (automatic in the cases listed above, with a notice)
  *     --json        machine-readable report on stdout
  * Exit codes: 0 = clean, 1 = findings, 2 = scanner error (bad arguments, unreadable folder).
  *
@@ -29,7 +34,7 @@
  * Limitations: binary files (NUL byte in the first 8 KiB) and files > 2 MiB are not content-scanned
  * (their NAMES are still checked); secrets split across lines or encoded are not detected.
  */
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import process from 'node:process';
@@ -176,24 +181,48 @@ function parseArgs(argv) {
   return opts;
 }
 
+/** Fallback reasons for a folder inside an enclosing repository that it does not belong to. */
+export const REASON_IGNORED_BY_ENCLOSING_REPO = 'ignored by the enclosing git repository';
+export const REASON_UNTRACKED_IN_ENCLOSING_REPO = 'no file in this folder is tracked by the enclosing git repository';
+export const REASON_GIT_LISTS_NO_FILES = 'git lists no files in this folder';
+
 /**
- * Can git list files for `root`? { ok: true } inside a work tree; otherwise { ok: false, reason } — git not
- * installed, not a git repository (e.g. a ZIP download), or git refusing the folder ("dubious ownership").
+ * Can git's file list be trusted for `root`? { ok: true } for the top folder of a work tree, or for a folder below
+ * it that belongs to that repository (not ignored there, at least one tracked file). Otherwise { ok: false, reason }:
+ * git not installed, not a git repository (e.g. a ZIP download), git refusing the folder ("dubious ownership"),
+ * or a folder that merely sits inside an enclosing repository — ignored by it (git would list nothing, a false
+ * "clean") or with none of its files tracked there.
  */
 export function gitStatus(root) {
+  let out;
   try {
-    const out = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+    out = execFileSync('git', ['rev-parse', '--is-inside-work-tree', '--show-prefix'], {
       cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    return out.trim() === 'true' ? { ok: true } : { ok: false, reason: 'not inside a git work tree' };
   } catch (e) {
     if (e && e.code === 'ENOENT') return { ok: false, reason: 'git is not installed' };
     const first = String(e?.stderr || e?.message || '').split(/\r?\n/).find((l) => l.trim()) ?? 'git failed';
     if (/not a git repository/i.test(first)) return { ok: false, reason: 'not a git repository' };
     return { ok: false, reason: first.replace(/^fatal:\s*/i, '').trim() };
   }
+  const [inside = '', prefix = ''] = out.split(/\r?\n/);
+  if (inside.trim() !== 'true') return { ok: false, reason: 'not inside a git work tree' };
+  if (prefix.trim() === '') return { ok: true }; // the top folder of the repository
+  // A folder below the top of an enclosing repository: only trust git's list when the folder belongs to it.
+  const opts = { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 };
+  const ignored = spawnSync('git', ['check-ignore', '-q', '--', '.'], opts);
+  if (ignored.status === 0) return { ok: false, reason: REASON_IGNORED_BY_ENCLOSING_REPO };
+  if (ignored.status !== 1) {
+    const first = String(ignored.stderr || ignored.error?.message || '').split(/\r?\n/).find((l) => l.trim()) ?? 'git check-ignore failed';
+    return { ok: false, reason: `could not ask git whether the folder is ignored (${first.replace(/^fatal:\s*/i, '').trim()})` };
+  }
+  const tracked = spawnSync('git', ['ls-files', '-z', '--cached', '--', '.'], opts);
+  if (tracked.status !== 0 || !String(tracked.stdout ?? '').replace(/\0/g, '')) {
+    return { ok: false, reason: REASON_UNTRACKED_IN_ENCLOSING_REPO };
+  }
+  return { ok: true };
 }
 
 /** Files git would publish: tracked + untracked-not-ignored. Paths relative to root, forward slashes. */
@@ -390,8 +419,8 @@ export function listFiles({ root, git }) {
   return git ? listGitFiles(root) : walkFiles(root);
 }
 
-export function scan({ root, git }) {
-  const files = listFiles({ root, git });
+/** Scan `files` (default: listFiles({ root, git })). */
+export function scan({ root, git, files = listFiles({ root, git }) }) {
   const findings = [];
   const skipped = [];
   let scanned = 0;
@@ -436,6 +465,7 @@ function main() {
   if (opts.help) {
     console.log('Usage: node scripts/secret-scan.mjs [--root <dir>] [--no-git] [--json]');
     console.log('Outside a git repository (or without git) the folder is walked, honouring its .gitignore files.');
+    console.log('The same happens for a folder that another repository ignores or does not track, or when git lists no files.');
     return 0;
   }
   try {
@@ -445,18 +475,25 @@ function main() {
     return 2;
   }
   let fallbackReason = null;
+  const fallBack = (reason) => {
+    // e.g. a ZIP download: scan the folder itself instead of failing or trusting an empty list.
+    fallbackReason = reason;
+    opts.git = false;
+    console.error(`secret-scan: notice — ${reason} (${opts.root}); scanning the folder instead (--no-git mode, honouring .gitignore).`);
+  };
   if (opts.git) {
     const st = gitStatus(opts.root);
-    if (!st.ok) {
-      // e.g. a ZIP download: scan the folder itself instead of failing.
-      fallbackReason = st.reason;
-      opts.git = false;
-      console.error(`secret-scan: notice — ${st.reason} (${opts.root}); scanning the folder instead (--no-git mode, honouring .gitignore).`);
-    }
+    if (!st.ok) fallBack(st.reason);
   }
   let report;
   try {
-    report = scan(opts);
+    let files = listFiles(opts);
+    if (opts.git && files.length === 0) {
+      // "0 files scanned" would read as clean although nothing was looked at.
+      fallBack(REASON_GIT_LISTS_NO_FILES);
+      files = listFiles(opts);
+    }
+    report = scan({ ...opts, files });
     if (fallbackReason) report.fallbackReason = fallbackReason;
   } catch (e) {
     console.error(`secret-scan: could not list files (${e.message.split('\n')[0]})`);

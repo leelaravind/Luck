@@ -3,13 +3,14 @@
  * dialog, sidebar, forms) and derives what may be shown while a result is still hidden.
  * App.tsx stays a layout file.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CreateSessionRequest, ProviderCapabilities } from '../../shared/contracts';
 import type { ApiClient } from '../api/client';
 import { isDecisionVisible, isLogVisible } from '../state/reveal';
 import { groupUsageByDecision, NO_USAGE } from '../state/usage';
 import { useLuck } from '../state/useLuck';
 import { useDrawer } from './useDrawer';
+import { isPageHidden } from './usePageVisibility';
 import { useNewSessionForm } from './useNewSessionForm';
 import { isAiKind, pricingKey, usePlayerDraft } from './usePlayerDraft';
 import { useSettingsForm } from './useSettingsForm';
@@ -64,19 +65,44 @@ export function useDashboard(api?: ApiClient) {
   }, [historyVisible, refreshSessions]);
   const onSessionPickerOpen = useCallback(() => void refreshSessions({ quiet: true }), [refreshSessions]);
 
+  // Settings freshness: re-read them from the server when the Settings panel is opened, and when the window
+  // regains focus while it is open, so the form never shows (and saves over) an old copy after another tab
+  // or an API client changed them. Skipped while the form holds unsaved changes (they would be replaced);
+  // the save then sends only those changes, so it still cannot overwrite anything else.
+  const { refreshSettings } = actions;
+  const settingsVisible = drawer.open && drawer.tab === 'settings';
+  const settingsGate = useRef({ booted: false, unsaved: false });
+  settingsGate.current = { booted: !state.busy.booting, unsaved: settingsForm.unsaved };
+  useEffect(() => {
+    if (!settingsVisible) return;
+    const refresh = () => {
+      const g = settingsGate.current;
+      if (g.booted && !g.unsaved) void refreshSettings();
+    };
+    refresh();
+    const onVisible = () => {
+      if (!isPageHidden()) refresh();
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [settingsVisible, refreshSettings]);
+
   const { createSession, saveSettings, testProvider, loadModels } = actions;
   const onCreate = useCallback(
     async (req: CreateSessionRequest) => {
       const ok = await createSession(req);
       if (!ok) return;
       setDialogOpen(false);
-      // Remember the last-used non-secret config for this provider.
+      // Remember the last-used non-secret config for this provider. Only this provider's entry is sent (the
+      // server merges players key by key), so a stale copy of the others is never written back.
       const kind = req.player.kind;
-      if (isAiKind(kind) && state.settings) {
-        void saveSettings({ players: { ...state.settings.players, [kind]: req.player } });
-      }
+      if (isAiKind(kind)) void saveSettings({ players: { [kind]: req.player } });
     },
-    [createSession, saveSettings, state.settings],
+    [createSession, saveSettings],
   );
 
   const onTest = useCallback(() => {

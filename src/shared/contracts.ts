@@ -522,12 +522,26 @@ export interface AppSettings {
    * animation — decides how often a model is asked for a decision. Default 7000.
    */
   roundPacingMs: number;
+  /**
+   * READ-ONLY, filled by the server: pricing keys that come from the built-in defaults. Only these
+   * rows are not removable in the UI (a user override of one can be reset to the default); every
+   * other row (whatever its `source`) can be removed.
+   */
+  builtInPricingKeys?: string[];
   reduceMotion: 'system' | 'on' | 'off';
   /** Pricing assumptions keyed by `${kind}:${model}`. */
   pricing: Record<string, Pricing>;
   /** Last-used non-secret player configs per provider. */
   players: Partial<Record<AiProviderKind, PlayerConfig>>;
 }
+
+/**
+ * PUT /api/settings body. `pricing` entries are MERGED key by key (a stale second tab can never
+ * delete rows it did not know about); deletions are explicit via `pricingRemove`. A built-in default
+ * key in `pricingRemove` only drops the user's override (the row returns to the default; it is never
+ * deleted). `builtInPricingKeys` is ignored on input.
+ */
+export type AppSettingsPatch = Partial<AppSettings> & { pricingRemove?: string[] };
 
 // ───────────────────────────── errors ─────────────────────────────
 

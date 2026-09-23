@@ -9,8 +9,11 @@ bet types and settled history) — nothing else is sent. It never sees RNG state
 rows or secrets.
 
 The **Claude Code CLI** is different: the CLI adds context of its own to every conversation (working
-directory, OS/shell details and, with a claude.ai subscription login, your account e-mail), so that model
-sees the game observation **plus** that CLI-added context. See
+directory, OS/shell details, the date, the model's own identity — name, model id and knowledge cutoff — a CLI
+token reminder and, with a claude.ai subscription login, your account e-mail). When an **app spending limit** is
+set, Luck passes the remaining app budget to the CLI as `--max-budget-usd`, and the CLI shows it to the model
+every turn (`budget_usd`: used / total / remaining in USD), so the model can see how much of your limit is left.
+That model therefore sees the game observation **plus** this CLI-added context. See
 [providers-cli-laya.md](providers-cli-laya.md#what-the-model-sees).
 
 ## How every adapter behaves

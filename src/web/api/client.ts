@@ -15,6 +15,7 @@ import type {
   ApiErrorBody,
   ApiErrorCode,
   AppSettings,
+  AppSettingsPatch,
   BetInput,
   ConnectionTestResult,
   ControlAction,
@@ -177,8 +178,14 @@ export function createApiClient(opts: ApiClientOptions = {}) {
 
     getSettings: (signal?: AbortSignal) => request<AppSettings>('GET', '/api/settings', undefined, { signal }),
 
-    updateSettings: (patch: Partial<AppSettings>, signal?: AbortSignal) =>
-      request<AppSettings>('PUT', '/api/settings', patch, { signal }),
+    /**
+     * PUT /api/settings. `pricing` entries are merged key by key; deletions go in `pricingRemove`.
+     * `builtInPricingKeys` is read-only (filled by the server), so it is never sent.
+     */
+    updateSettings: (patch: AppSettingsPatch, signal?: AbortSignal) => {
+      const { builtInPricingKeys: _readOnly, ...body } = patch;
+      return request<AppSettings>('PUT', '/api/settings', body, { signal });
+    },
 
     listSessions: (signal?: AbortSignal) =>
       request<{ sessions: SessionInfo[] }>('GET', '/api/sessions', undefined, { signal }),

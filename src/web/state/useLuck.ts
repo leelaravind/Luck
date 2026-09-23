@@ -11,6 +11,7 @@ import type {
   AiProviderKind,
   AnimationSpeed,
   AppSettings,
+  AppSettingsPatch,
   BetInput,
   ControlAction,
   CreateSessionRequest,
@@ -65,6 +66,20 @@ async function fetchRounds(api: ApiClient, id: string, signal?: AbortSignal): Pr
   return all;
 }
 
+/** JSON with sorted object keys, so two equal settings objects compare equal whatever their key order. */
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === 'object' && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : v,
+  );
+}
+
+/** Same settings content (the form is not re-synced — and in-progress typing not lost — for an unchanged copy). */
+export function sameSettings(a: AppSettings | null, b: AppSettings | null): boolean {
+  return a === b || (!!a && !!b && stableJson(a) === stableJson(b));
+}
+
 function pickInitialSession(sessions: readonly SessionInfo[]): string | null {
   const stored = readStored(STORAGE_KEYS.selectedSessionId);
   if (stored && sessions.some((s) => s.id === stored)) return stored;
@@ -105,9 +120,42 @@ export function useLuck(opts: UseLuckOptions = {}) {
     dispatch({ type: 'error', error: toLastError(scope, err, kind) });
   }, []);
 
+  // Settings responses can arrive out of order (a background re-read vs. a save). A write's response is
+  // the server's state after that write and is applied unless the response of a newer write was applied
+  // already. A read's response is applied only if it is the newest read and no write was started or is
+  // still pending since it began (the read may have been answered before the write landed).
+  const settingsIo = useRef({ reads: 0, writes: 0, pendingWrites: 0, appliedWrite: 0 });
+  const settingsRef = useRef(state.settings);
+  settingsRef.current = state.settings;
+  const beginSettingsRead = useCallback(() => {
+    const io = settingsIo.current;
+    const read = ++io.reads;
+    const writes = io.writes;
+    return () => read === io.reads && writes === io.writes && io.pendingWrites === 0;
+  }, []);
+  const beginSettingsWrite = useCallback(() => {
+    const io = settingsIo.current;
+    const write = ++io.writes;
+    io.pendingWrites++;
+    let done = false;
+    return {
+      /** True when no newer write's response has been applied yet (then this one counts as applied). */
+      claim: () => {
+        if (write <= io.appliedWrite) return false;
+        io.appliedWrite = write;
+        return true;
+      },
+      end: () => {
+        if (!done) io.pendingWrites--;
+        done = true;
+      },
+    };
+  }, []);
+
   // ───────────── bootstrap ─────────────
   useEffect(() => {
     const ac = new AbortController();
+    const settingsReadCurrent = beginSettingsRead();
     void (async () => {
       const [health, providers, settings, sessions] = await Promise.allSettled([
         api.health(ac.signal),
@@ -118,7 +166,10 @@ export function useLuck(opts: UseLuckOptions = {}) {
       if (ac.signal.aborted) return;
       dispatch({ type: 'health', health: health.status === 'fulfilled' ? health.value : null });
       if (providers.status === 'fulfilled') dispatch({ type: 'providers', providers: providers.value.providers });
-      if (settings.status === 'fulfilled') dispatch({ type: 'settings', settings: settings.value });
+      // A newer read or a write decides, unless nothing is loaded yet (better than no settings at all).
+      if (settings.status === 'fulfilled' && (settingsReadCurrent() || settingsRef.current === null)) {
+        dispatch({ type: 'settings', settings: settings.value });
+      }
       if (sessions.status === 'fulfilled') {
         dispatch({ type: 'sessions', sessions: sessions.value.sessions });
         dispatch({ type: 'select', sessionId: pickInitialSession(sessions.value.sessions) });
@@ -128,7 +179,7 @@ export function useLuck(opts: UseLuckOptions = {}) {
       dispatch({ type: 'busy', patch: { booting: false } });
     })();
     return () => ac.abort();
-  }, [api, fail]);
+  }, [api, fail, beginSettingsRead]);
 
   // ───────────── selected session: load snapshot + lists ─────────────
   const selectedId = state.selectedSessionId;
@@ -418,22 +469,43 @@ export function useLuck(opts: UseLuckOptions = {}) {
     [api, guard, fail, immediate, state.selectedSessionId],
   );
 
+  /**
+   * Re-read GET /api/settings (another tab or an API client may have changed them). Quiet: a failure is not
+   * reported as a page error (the connection indicator shows an unreachable server) and the current copy is
+   * kept. An unchanged result is not dispatched, so an open form is not re-synced for nothing.
+   */
+  const refreshSettings = useCallback(async (): Promise<void> => {
+    const current = beginSettingsRead();
+    try {
+      const settings = await api.getSettings();
+      // A save or a newer read was started meanwhile: its result wins (unless nothing is loaded yet).
+      if (!current() && settingsRef.current !== null) return;
+      if (sameSettings(settings, settingsRef.current)) return;
+      dispatch({ type: 'settings', settings });
+    } catch {
+      /* keep the current copy */
+    }
+  }, [api, beginSettingsRead]);
+
   const saveSettings = useCallback(
-    async (patch: Partial<AppSettings>): Promise<boolean> =>
+    async (patch: AppSettingsPatch): Promise<boolean> =>
       (await guard('settings', async () => {
         dispatch({ type: 'busy', patch: { settings: true } });
+        const write = beginSettingsWrite();
         try {
           const settings = await api.updateSettings(patch);
-          dispatch({ type: 'settings', settings });
+          // The server's state after this change (unless a newer save or speed change was applied already).
+          if (write.claim()) dispatch({ type: 'settings', settings });
           return true;
         } catch (err) {
           fail('settings', err);
           return false;
         } finally {
+          write.end();
           dispatch({ type: 'busy', patch: { settings: false } });
         }
       })) ?? false,
-    [api, guard, fail],
+    [api, guard, fail, beginSettingsWrite],
   );
 
   /**
@@ -444,13 +516,20 @@ export function useLuck(opts: UseLuckOptions = {}) {
   const setAnimationSpeed = useCallback(
     (animationSpeed: AnimationSpeed) => {
       latestSpeed.current = animationSpeed;
+      const write = beginSettingsWrite();
       if (state.settings) dispatch({ type: 'settings', settings: { ...state.settings, animationSpeed } });
-      api.updateSettings({ animationSpeed }).then(
-        (settings) => dispatch({ type: 'settings', settings: { ...settings, animationSpeed: latestSpeed.current ?? settings.animationSpeed } }),
-        (err) => fail('settings', err),
-      );
+      api
+        .updateSettings({ animationSpeed })
+        .then(
+          (settings) => {
+            if (!write.claim()) return; // a newer change's response was applied already
+            dispatch({ type: 'settings', settings: { ...settings, animationSpeed: latestSpeed.current ?? settings.animationSpeed } });
+          },
+          (err) => fail('settings', err),
+        )
+        .finally(write.end);
     },
-    [api, state.settings, fail],
+    [api, state.settings, fail, beginSettingsWrite],
   );
 
   const testProvider = useCallback(
@@ -509,6 +588,7 @@ export function useLuck(opts: UseLuckOptions = {}) {
       placeRound,
       control,
       saveSettings,
+      refreshSettings,
       setAnimationSpeed,
       testProvider,
       loadModels,

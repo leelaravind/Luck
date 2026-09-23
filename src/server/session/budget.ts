@@ -3,7 +3,8 @@
  *
  * Before EVERY attempt the runner asks: could this call push spending past the app budget?
  *   worst case = worstCaseCostMicros(ceil(promptChars / 3), maxOutputTokens, pricing)
- *   (Claude Code CLI without a pricing assumption: max(2 × last CLI-reported cost, 50_000 µ$))
+ *   (Claude Code CLI: max(that estimate if a pricing assumption exists, 2 × the last turn's
+ *    CLI-reported cost, the session's total CLI-reported cost so far, 50_000 µ$) — see cliWorstCase)
  *   spent      = sum of known attempt costs
  *              + worst case for every earlier paid attempt whose cost is unknown but that may
  *                have been processed (ok / invalid_output / timeout / cancelled / stale / error —
@@ -15,7 +16,7 @@ import type { Pricing, ProviderCapabilities, UsageAttemptStatus, UsageRecord, Us
 import { formatUsdMicros } from '../../shared/money.js';
 import { worstCaseCostMicros } from '../providers/pricing.js';
 
-/** Floor for a CLI call's worst case when no pricing assumption and no history exist ($0.05). */
+/** Floor for a Claude Code CLI call's worst case ($0.05), with or without a pricing assumption. */
 export const CLI_MIN_WORST_CASE_MICROS = 50_000;
 /** Conservative characters-per-token ratio for the input estimate (real text is usually ~4). */
 const CHARS_PER_TOKEN_ESTIMATE = 3;
@@ -29,6 +30,28 @@ export function estimateInputTokens(promptChars: number): number {
   return Math.ceil(Math.max(0, promptChars) / CHARS_PER_TOKEN_ESTIMATE);
 }
 
+/**
+ * Worst case of one Claude Code CLI turn. The CLI resumes ONE conversation per session and re-sends
+ * every earlier turn, so the current prompt alone under-estimates the input (reviewer A11b-N5), and
+ * the last turn's cost is no bound either: a warm turn is mostly cheap cache reads, but once the
+ * prompt cache has expired (e.g. a session resumed after a long pause) the whole context is written
+ * again at the cache-write price. What all turns so far cost together is at least what writing that
+ * context once costs, so the bound is the largest of
+ *   the pricing estimate (when an assumption exists), 2 × the last turn's reported cost,
+ *   the session's total CLI-reported cost so far, and the 50 000 µ$ floor.
+ */
+function cliWorstCase(pricingEstimate: number | null, records: readonly UsageRecord[]): UsdMicros {
+  let last = 0;
+  let total = 0;
+  for (const r of records) {
+    if (r.costBasis === 'provider-reported' && r.costMicros !== null && Number.isFinite(r.costMicros)) {
+      last = r.costMicros;
+      total += r.costMicros;
+    }
+  }
+  return Math.ceil(Math.max(pricingEstimate ?? 0, 2 * last, total, CLI_MIN_WORST_CASE_MICROS));
+}
+
 /** Worst-case cost of ONE attempt, or null when it cannot be bounded (no pricing, provider reports no cost). */
 function worstCaseAttemptMicros(input: {
   capabilities: Pick<ProviderCapabilities, 'kind' | 'reportsCost'>;
@@ -37,28 +60,16 @@ function worstCaseAttemptMicros(input: {
   maxOutputTokens: number;
   records: readonly UsageRecord[];
 }): UsdMicros | null {
-  let lastCliCost: number | null = null;
-  for (const r of input.records) {
-    if (r.costBasis === 'provider-reported' && r.costMicros !== null) lastCliCost = r.costMicros;
-  }
+  let estimate: number | null = null;
   if (input.pricing) {
     const w = worstCaseCostMicros(estimateInputTokens(input.promptChars), input.maxOutputTokens, input.pricing);
-    // null = the pricing entry could not bound this request; fall through (never treat it as $0).
-    if (typeof w === 'number' && Number.isFinite(w)) {
-      // The CLI resumes one conversation per session, re-sending earlier turns: the current prompt alone
-      // under-estimates the input, so never go below 2 × the last CLI-reported cost (reviewer A11b-N5).
-      if (input.capabilities.kind === 'claude-cli' && lastCliCost !== null) return Math.ceil(Math.max(w, 2 * lastCliCost));
-      return Math.ceil(w);
-    }
+    // null = the pricing entry could not bound this request (never treat it as $0).
+    if (typeof w === 'number' && Number.isFinite(w)) estimate = w;
   }
-  if (input.capabilities.kind === 'claude-cli' && input.capabilities.reportsCost) {
-    let last: number | null = null;
-    for (const r of input.records) {
-      if (r.costBasis === 'provider-reported' && r.costMicros !== null) last = r.costMicros;
-    }
-    return Math.max(2 * (last ?? 0), CLI_MIN_WORST_CASE_MICROS);
+  if (input.capabilities.kind === 'claude-cli' && (estimate !== null || input.capabilities.reportsCost)) {
+    return cliWorstCase(estimate, input.records);
   }
-  return null;
+  return estimate === null ? null : Math.ceil(estimate);
 }
 
 /**

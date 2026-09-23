@@ -9,10 +9,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { redact } from '../redact.js';
+import { MAX_PROVIDER_NOTE_CHARS } from '../session/aiDecision.js';
 import type { DecisionRequest, ProviderAdapter, ResolvedProviderConfig } from '../types.js';
 
 const FAKE = fileURLToPath(new URL('../../../tests/fixtures/fake-claude.mjs', import.meta.url));
-const TMP_ROOT = fileURLToPath(new URL('../../../tmp/8/claudeCli-test/', import.meta.url));
+/**
+ * A private folder for THIS test process (mkdtemp gives it a unique name). Test runs that happen at
+ * the same time never share it, and afterAll deletes only this folder, never another run's files
+ * (the fake CLI keeps each conversation's state in it while a test runs).
+ */
+const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'luck-claudecli-test-'));
 
 type Mod = typeof import('./claudeCli.js');
 type AdapterOptions = NonNullable<Parameters<Mod['createClaudeCliAdapter']>[0]>;
@@ -26,8 +33,8 @@ async function freshModule(): Promise<Mod> {
 let caseDir = '';
 let counter = 0;
 beforeEach(() => {
-  caseDir = path.join(TMP_ROOT, `${process.pid}-${Date.now()}-${counter++}`);
-  fs.mkdirSync(caseDir, { recursive: true });
+  caseDir = path.join(TMP_ROOT, `case-${counter++}`);
+  fs.mkdirSync(caseDir);
 });
 afterAll(() => {
   fs.rmSync(TMP_ROOT, { recursive: true, force: true });
@@ -580,10 +587,13 @@ describe('claude-cli per-turn cost and API time in a resumed conversation (fixtu
     // Tokens come from result.usage, which is already per turn; modelUsage (a running total) only names the model.
     expect(t2.usage).toMatchObject({ inputTokens: 812, outputTokens: 57, known: true });
     expect(t2.modelReported).toBe('haiku');
-    expect(t1.note).not.toMatch(/running conversation totals/);
-    expect(t2.note).toMatch(/turn 2 \(resumed\)/);
-    expect(t2.note).toMatch(/this turn's increase of the CLI's running conversation totals \(conversation total so far \$0\.0055\)/);
-    expect(t3.note).toMatch(/API time 650 ms/);
+    expect(t1.note).toMatch(/turn 1 \(opened\)/);
+    expect(t1.note).not.toMatch(/this turn's increase|so far/);
+    expect(t1.note).toContain("cost is the CLI's own estimate, not billing");
+    expect(t2.note).toMatch(/turn 2 \(resumed, cost so far \$0\.0055\)/);
+    expect(t2.note).toMatch(/cost \(CLI estimate, not billing\) and API time: this turn's increase$/);
+    expect(t3.note).toMatch(/turn 3 \(resumed, cost so far \$0\.0076\)/);
+    expect(t3.note).toMatch(/API time 650 ms \(incl\. first token\)/);
   });
 
   it('an unknown previous total makes the resumed turn cost unknown (null + note), never the running total', async () => {
@@ -602,8 +612,9 @@ describe('claude-cli per-turn cost and API time in a resumed conversation (fixtu
     expect(t2.ok).toBe(true);
     expect(t2.providerCostUsd).toBeNull();
     expect(t2.generationMs).toBeNull();
-    expect(t2.note).toMatch(/cost unknown: the CLI reports a running total for the conversation and the previous total is not known/);
-    expect(t2.note).toMatch(/API time unknown/);
+    // The warnings lead the note; no "cost so far" / "this turn's increase" claim for unknown figures.
+    expect(t2.note).toMatch(/^cost unknown: previous CLI total not known; API time unknown: previous CLI total not known; conversation /);
+    expect(t2.note).toMatch(/turn 2 \(resumed\); CLI turns: 2$/);
 
     // Once a total has been seen, the next turn is exact again.
     const t3 = await adapter.decide(request(key), CFG, sig());
@@ -622,7 +633,8 @@ describe('claude-cli per-turn cost and API time in a resumed conversation (fixtu
     expect(bad.error?.code).toBe('auth');
     expect(readRecord().argv).toContain('--resume');
     expect(bad.providerCostUsd).toBeNull();
-    expect(bad.note).toMatch(/cost unknown: the CLI's running total \(0\) is below the previous one \(0\.004\)/);
+    expect(bad.note).toMatch(/^cost unknown: CLI total fell \$0\.004 → \$0; API time unknown: CLI total fell 1200 → 300 ms; /);
+    expect(bad.note).not.toMatch(/so far/); // a zeroed total is never shown as the conversation's cost
 
     const next = await adapter.decide(request(key), CFG, sig()); // CLI total 0.0055 continues from the transcript
     expect(next.ok).toBe(true);
@@ -642,7 +654,7 @@ describe('claude-cli per-turn cost and API time in a resumed conversation (fixtu
     expect(t2.ok).toBe(true);
     expect(t2.providerCostUsd).toBeNull();
     expect(t2.generationMs).toBeNull();
-    expect(t2.note).toMatch(/cost unknown: the CLI's running total \(0\.0015\) is below the previous one \(0\.004\)/);
+    expect(t2.note).toMatch(/^cost unknown: CLI total fell \$0\.004 → \$0\.0015; API time unknown: CLI total fell 1200 → 800 ms; /);
     const t3 = await adapter.decide(request(key), CFG, sig()); // CLI total 0.0036 from the new base 0.0015
     expect(t3.providerCostUsd).toBeCloseTo(0.0021, 12);
     expect(t3.generationMs).toBe(650);
@@ -658,8 +670,137 @@ describe('claude-cli per-turn cost and API time in a resumed conversation (fixtu
     const next = await adapter.decide(request(key), CFG, sig());
     expect(next.ok).toBe(true);
     expect(readRecord().argv).toContain('--resume');
-    expect(next.note).toMatch(/turn 2 \(resumed\)/);
-    expect(next.note).toMatch(/earlier attempt in this conversation ended without a result/);
+    expect(next.note).toMatch(/turn 2 \(resumed, cost so far \$0\.00246\)/);
+    // The warning leads the note, so the storage limit can never cut it off.
+    expect(next.note).toMatch(/^earlier attempt had no result; any cost the CLI recorded is included; conversation /);
+  });
+});
+
+// ───────────────────────────── note length: the 300-character storage limit ─────────────────────────────
+
+describe('claude-cli provider note fits the stored-note limit, warnings first', () => {
+  /** What aiDecision.ts stores: clip(redact(note.trim()), MAX_PROVIDER_NOTE_CHARS). */
+  const stored = (note: string) => redact(note.trim()).slice(0, MAX_PROVIDER_NOTE_CHARS);
+
+  it('the adapter limit is the session runner limit', async () => {
+    const m = await freshModule();
+    expect(m.CLI_NOTE_MAX_CHARS).toBe(MAX_PROVIDER_NOTE_CHARS);
+  });
+
+  it('short problem texts: previous total unknown / total fell (6-decimal USD, whole ms)', async () => {
+    const m = await freshModule();
+    expect(m.turnIncrease(0.0055, null, 'cost')).toEqual({ value: null, problem: 'cost unknown: previous CLI total not known' });
+    expect(m.turnIncrease(0.018923000000000002, 0.02, 'cost').problem).toBe('cost unknown: CLI total fell $0.02 → $0.018923');
+    expect(m.turnIncrease(300, 1200, 'API time').problem).toBe('API time unknown: CLI total fell 1200 → 300 ms');
+    expect(m.turnIncrease(0.0055, 0.004, 'cost')).toEqual({ value: 0.0015, problem: null });
+    expect(m.turnIncrease(null, 0.004, 'cost')).toEqual({ value: null, problem: null });
+  });
+
+  it('every longest combination (with long numbers) is kept whole within the limit and survives storage', async () => {
+    const m = await freshModule();
+    // Deliberately long numbers: turn 99999, 99 CLI turns / retries, ~2.8 h of API time for one turn,
+    // ten-digit ms totals and a $999.999999 conversation.
+    const conversation = { id: '1c32bed1', turn: 99_999, resumed: true };
+    const costFell = m.turnIncrease(999.999998, 999.999999, 'cost').problem!;
+    const apiFell = m.turnIncrease(9_999_999_998, 9_999_999_999, 'API time').problem!;
+    const costBase = m.turnIncrease(1, null, 'cost').problem!;
+    const apiBase = m.turnIncrease(1, null, 'API time').problem!;
+    const common = { earlierAttemptWithoutResult: true, apiRetries: 99, conversation, cliTurns: 99, conversationCostUsd: 999.999999 };
+    const combos: Record<string, Parameters<Mod['buildCliNote']>[0]> = {
+      'no problem': { ...common, problems: [], apiMs: 9_999_999, costUsd: 0.123456 },
+      'cost fell': { ...common, problems: [costFell], apiMs: 9_999_999, costUsd: null },
+      'cost base unknown': { ...common, problems: [costBase], apiMs: 9_999_999, costUsd: null },
+      'API time fell': { ...common, problems: [apiFell], apiMs: null, costUsd: 0.123456 },
+      'API time base unknown': { ...common, problems: [apiBase], apiMs: null, costUsd: 0.123456 },
+      'both fell': { ...common, problems: [costFell, apiFell], apiMs: null, costUsd: null },
+      'both base unknown': { ...common, problems: [costBase, apiBase], apiMs: null, costUsd: null },
+      'mixed': { ...common, problems: [costFell, apiBase], apiMs: null, costUsd: null },
+    };
+    let longest = 0;
+    for (const [name, facts] of Object.entries(combos)) {
+      const note = m.buildCliNote(facts)!;
+      const unlimited = m.buildCliNote(facts, Number.POSITIVE_INFINITY)!;
+      expect(note, name).toBe(unlimited); // nothing had to be left out
+      expect(note.length, name).toBeLessThanOrEqual(MAX_PROVIDER_NOTE_CHARS);
+      expect(stored(note), name).toBe(note); // survives redact + clip unchanged
+      // Warnings first: the problems, then the earlier-attempt warning, then the retry count.
+      const warnings = [...facts.problems, 'earlier attempt had no result; any cost the CLI recorded is included', 'CLI retried the API 99×'];
+      expect(note.startsWith(warnings.join('; ')), name).toBe(true);
+      longest = Math.max(longest, note.length);
+    }
+    // The longest one ('API time fell') for the record; it must stay within the limit.
+    expect(longest).toBe(m.buildCliNote(combos['API time fell']!)!.length);
+    expect(longest).toBeLessThanOrEqual(MAX_PROVIDER_NOTE_CHARS);
+  });
+
+  it('absurd numbers: whole trailing parts are dropped, warnings are kept, nothing is cut mid-sentence', async () => {
+    const m = await freshModule();
+    const facts: Parameters<Mod['buildCliNote']>[0] = {
+      problems: [m.turnIncrease(1e14, 1e15, 'API time').problem!],
+      earlierAttemptWithoutResult: true,
+      apiRetries: 123_456_789,
+      conversation: { id: '1c32bed1', turn: 1e15, resumed: true },
+      cliTurns: 1e15,
+      apiMs: null,
+      costUsd: 123_456_789.123456,
+      conversationCostUsd: 987_654_321.123456,
+    };
+    const full = m.buildCliNote(facts, Number.POSITIVE_INFINITY)!;
+    const note = m.buildCliNote(facts)!;
+    expect(full.length).toBeGreaterThan(MAX_PROVIDER_NOTE_CHARS);
+    expect(note.length).toBeLessThanOrEqual(MAX_PROVIDER_NOTE_CHARS);
+    expect(full.startsWith(note)).toBe(true);
+    expect(full.slice(note.length).startsWith('; ')).toBe(true); // ends on a part boundary
+    expect(note).toMatch(/^API time unknown: CLI total fell 1000000000000000 → 100000000000000 ms; earlier attempt had no result; any cost the CLI recorded is included; CLI retried the API 123456789×/);
+    expect(stored(note)).toBe(note);
+  });
+
+  it('fixture run: the longest live combination (resumed after a lost attempt, with API retries) is stored whole', async () => {
+    const { adapter, mod } = await fakeAdapter('ok', {
+      FAKE_CLAUDE_TURN_COSTS: '0.004,0.0015',
+      FAKE_CLAUDE_TURN_API_MS: '1200,800',
+      FAKE_CLAUDE_API_RETRIES: '2',
+    });
+    const key = { conversationKey: 'luck-session-longest-note' };
+    const t1 = await adapter.decide(request(key), CFG, sig());
+    expect(t1.ok).toBe(true);
+    const rec1 = readRecord();
+    const id8 = rec1.argv[rec1.argv.indexOf('--session-id') + 1]!.slice(0, 8);
+    expect(t1.note).toBe(`CLI retried the API 2×; conversation ${id8} turn 1 (opened); CLI turns: 2; API time 1200 ms (incl. first token); cost is the CLI's own estimate, not billing`);
+
+    const { adapter: hanging } = await fakeAdapter('hang', {}, mod);
+    expect((await hanging.decide(request({ ...key, timeoutMs: 800 }), CFG, sig())).error?.code).toBe('timeout');
+
+    const t2 = await adapter.decide(request(key), CFG, sig());
+    expect(t2.ok).toBe(true);
+    expect(t2.note).toBe(
+      `earlier attempt had no result; any cost the CLI recorded is included; CLI retried the API 2×; ` +
+        `conversation ${id8} turn 2 (resumed, cost so far $0.0055); CLI turns: 2; API time 800 ms (incl. first token); ` +
+        `cost (CLI estimate, not billing) and API time: this turn's increase`,
+    );
+    expect(stored(t2.note!)).toBe(t2.note);
+  });
+
+  it('fixture run: unknown figures lead the note, ahead of the earlier-attempt warning and the retries', async () => {
+    const { adapter, mod } = await fakeAdapter('ok', {
+      FAKE_CLAUDE_TURN_COSTS: '0.004,0.0015',
+      FAKE_CLAUDE_TURN_API_MS: '1200,800',
+      FAKE_CLAUDE_RESET_TOTALS_ON_TURN: '2',
+      FAKE_CLAUDE_API_RETRIES: '1',
+    });
+    const key = { conversationKey: 'luck-session-warnings-first' };
+    expect((await adapter.decide(request(key), CFG, sig())).ok).toBe(true);
+    const { adapter: hanging } = await fakeAdapter('hang', {}, mod);
+    expect((await hanging.decide(request({ ...key, timeoutMs: 800 }), CFG, sig())).error?.code).toBe('timeout');
+
+    const t2 = await adapter.decide(request(key), CFG, sig()); // the CLI's totals restart: 0.0015 < 0.004
+    expect(t2.ok).toBe(true);
+    expect(t2.providerCostUsd).toBeNull();
+    expect(t2.generationMs).toBeNull();
+    expect(t2.note).toMatch(
+      /^cost unknown: CLI total fell \$0\.004 → \$0\.0015; API time unknown: CLI total fell 1200 → 800 ms; earlier attempt had no result; any cost the CLI recorded is included; CLI retried the API 1×; conversation [0-9a-f]{8} turn 2 \(resumed\); CLI turns: 2$/,
+    );
+    expect(stored(t2.note!)).toBe(t2.note);
   });
 });
 

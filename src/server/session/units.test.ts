@@ -320,6 +320,29 @@ describe('budget pre-check', () => {
     expect(checkBudget({ ...base, records: recs })).toMatchObject({ allowed: true, worstCaseMicros: 80_000 });
   });
 
+  it('Claude Code CLI: the worst case includes the session total so far (a resumed turn whose prompt cache expired)', () => {
+    const cli = { kind: 'claude-cli' as const, reportsCost: true };
+    // Turn 1 wrote a large context to the prompt cache (the expensive part); the warm turns after it
+    // were mostly cheap cache reads. Once the cache expires, the next turn writes the whole context
+    // again, which costs about as much as turn 1 did — far more than 2 × the last warm turn.
+    const recs = [120_000, 6_000, 6_000].map((c) => usage({ providerKind: 'claude-cli', costMicros: c, costBasis: 'provider-reported' }));
+    const base = { capabilities: cli, pricing: null, promptChars: 1_000, maxOutputTokens: 400, records: recs };
+    // max(2 × 6 000, total 132 000, floor 50 000) = 132 000 (the old bound was only 50 000).
+    expect(checkBudget({ ...base, budgetMicros: 1_000_000 })).toMatchObject({ allowed: true, worstCaseMicros: 132_000, spentMicros: 132_000 });
+    // spent 132 000 + worst 132 000 > 200 000: the next turn is not sent (the old bound let it go over).
+    const blocked = checkBudget({ ...base, budgetMicros: 200_000 });
+    expect(blocked).toMatchObject({ allowed: false, worstCaseMicros: 132_000 });
+
+    // With a pricing assumption: max(pricing estimate, 2 × last, total, floor).
+    const cheap = { inputPerMTokUsd: 1, outputPerMTokUsd: 5, source: 'user' as const }; // estimate 334 + 2 000 µ$
+    expect(checkBudget({ ...base, pricing: cheap, budgetMicros: 1_000_000 }).worstCaseMicros).toBe(132_000);
+    expect(checkBudget({ ...base, pricing: cheap, records: [], budgetMicros: 1_000_000 }).worstCaseMicros).toBe(CLI_MIN_WORST_CASE_MICROS);
+    const dear = { inputPerMTokUsd: 1_000, outputPerMTokUsd: 1_000, source: 'user' as const }; // 334 × 1 000 + 400 × 1 000
+    expect(checkBudget({ ...base, pricing: dear, budgetMicros: 10_000_000 }).worstCaseMicros).toBe(734_000);
+    // Other providers are unchanged: the pricing estimate alone.
+    expect(checkBudget({ ...base, capabilities: caps, pricing: cheap, budgetMicros: 1_000_000 }).worstCaseMicros).toBe(2_334);
+  });
+
   it('no app spending limit allows the call; a set limit with an unboundable cost refuses', () => {
     const unlimited = checkBudget({ capabilities: caps, pricing, promptChars: 10, maxOutputTokens: 1, budgetMicros: null, records: [] });
     expect(unlimited.allowed).toBe(true);
@@ -449,7 +472,7 @@ describe('settings and session validation', () => {
     repo.close();
   });
 
-  it('#36: "pricing" in a patch is the complete map of user entries — a removed row stays removed after reload', () => {
+  it('#36: "pricing" is merged key by key and rows are deleted only via pricingRemove — a removed row stays removed after reload', () => {
     const repo = openRepository(':memory:');
     const mine = { inputPerMTokUsd: 1, outputPerMTokUsd: 2, source: 'user' as const, asOf: '2026-09-23' };
     const other = { inputPerMTokUsd: 3, outputPerMTokUsd: 4, source: 'user' as const };
@@ -458,10 +481,11 @@ describe('settings and session validation', () => {
     expect(withBoth.pricing['openai:gpt-x']).toEqual(mine);
     expect(Object.keys(withBoth.pricing)).toHaveLength(Object.keys(DEFAULT_PRICING).length + 2);
 
-    // Remove one row and save: it is deleted, the other user row and every default stay.
+    // Remove one row (explicitly) and save the rest of the table: it is deleted, the other user row
+    // and every default stay.
     const shown = loadSettings(repo).pricing;
     const { 'openai:gpt-x': _removed, ...rest } = shown;
-    saveSettings(repo, { pricing: rest });
+    saveSettings(repo, { pricing: rest, pricingRemove: ['openai:gpt-x'] });
     const reloaded = loadSettings(repo);
     expect(reloaded.pricing['openai:gpt-x']).toBeUndefined();
     expect(reloaded.pricing['ollama:llama3']).toEqual(other);
@@ -469,21 +493,117 @@ describe('settings and session validation', () => {
     // Only user entries are stored; defaults are never copied into the stored settings.
     expect(Object.keys(repo.getSetting<{ pricing: Record<string, unknown> }>(SETTINGS_KEY)!.pricing)).toEqual(['ollama:llama3']);
 
-    // Default assumptions cannot be removed: omitting them (or sending {}) keeps them.
+    // Omitting a row (or sending {}) deletes nothing: no user row, no default.
     saveSettings(repo, { pricing: {} });
-    expect(loadSettings(repo).pricing).toEqual(DEFAULT_PRICING);
+    saveSettings(repo, { pricing: { ...DEFAULT_PRICING } });
+    expect(loadSettings(repo).pricing).toEqual({ ...DEFAULT_PRICING, 'ollama:llama3': other });
 
-    // A user override of a default key wins; removing the override brings the default back.
+    // A user override of a default key wins, and a default sent back unchanged never replaces it.
     const override = { ...DEFAULT_PRICING['anthropic:claude-opus-5']!, inputPerMTokUsd: 4, source: 'user' as const };
     saveSettings(repo, { pricing: { ...DEFAULT_PRICING, 'anthropic:claude-opus-5': override } });
     expect(loadSettings(repo).pricing['anthropic:claude-opus-5']).toEqual(override);
     saveSettings(repo, { pricing: { ...DEFAULT_PRICING } });
-    expect(loadSettings(repo).pricing['anthropic:claude-opus-5']).toEqual(DEFAULT_PRICING['anthropic:claude-opus-5']);
+    expect(loadSettings(repo).pricing['anthropic:claude-opus-5']).toEqual(override);
 
     // A patch without "pricing" leaves the user's entries alone.
     saveSettings(repo, { pricing: { 'openai:kept': other } });
     saveSettings(repo, { animationSpeed: 'fast' });
     expect(loadSettings(repo).pricing['openai:kept']).toEqual(other);
+    repo.close();
+  });
+
+  it('#36 (V3): a save from a stale second tab never deletes a row added in another tab', () => {
+    const repo = openRepository(':memory:');
+    const a = { inputPerMTokUsd: 1, outputPerMTokUsd: 1, source: 'user' as const };
+    const b = { inputPerMTokUsd: 2, outputPerMTokUsd: 2, source: 'user' as const };
+    saveSettings(repo, { pricing: { 'openai:fixture-a': a } });
+    const staleTab = loadSettings(repo).pricing; // tab 1 loads now…
+    saveSettings(repo, { pricing: { ...loadSettings(repo).pricing, 'openai:fixture-b': b } }); // …tab 2 adds a row
+    // Tab 1 saves the table it still shows (without tab 2's row), editing one of its own rows.
+    saveSettings(repo, { pricing: { ...staleTab, 'openai:fixture-a': { ...a, outputPerMTokUsd: 9 } } });
+    const s = loadSettings(repo);
+    expect(s.pricing['openai:fixture-b']).toEqual(b);
+    expect(s.pricing['openai:fixture-a']).toEqual({ ...a, outputPerMTokUsd: 9 });
+    // Removing a row another tab already removed is not an error.
+    saveSettings(repo, { pricingRemove: ['openai:fixture-b'] });
+    expect(() => saveSettings(repo, { pricingRemove: ['openai:fixture-b', 'openai:never-existed'] })).not.toThrow();
+    expect(loadSettings(repo).pricing['openai:fixture-b']).toBeUndefined();
+    repo.close();
+  });
+
+  it('#36 (V4): built-in keys are reported; removing one resets the override to the default; any other row is removed', () => {
+    const repo = openRepository(':memory:');
+    const builtIn = Object.keys(DEFAULT_PRICING);
+    expect(loadSettings(repo).builtInPricingKeys).toEqual(builtIn);
+    expect(builtIn.length).toBeGreaterThan(0);
+
+    // An orphan 'default-assumption' row (no built-in default for its key: API data, or a default a
+    // later version dropped) is kept, reported as not built-in, and removable.
+    const orphan = { inputPerMTokUsd: 1, outputPerMTokUsd: 1, source: 'default-assumption' as const, asOf: '2025-01-01' };
+    const saved = saveSettings(repo, { pricing: { 'openai:fixture-ghost-old-default': orphan } });
+    expect(saved.pricing['openai:fixture-ghost-old-default']).toEqual(orphan);
+    expect(saved.builtInPricingKeys).not.toContain('openai:fixture-ghost-old-default');
+    saveSettings(repo, { pricingRemove: ['openai:fixture-ghost-old-default'] });
+    expect(loadSettings(repo).pricing['openai:fixture-ghost-old-default']).toBeUndefined();
+
+    // A built-in key in pricingRemove drops only the user's override: the row returns to the built-in
+    // default ("Reset to default") and can never disappear; the rest of the patch is applied.
+    const key = builtIn[0]!;
+    const override = { ...DEFAULT_PRICING[key]!, inputPerMTokUsd: 7, source: 'user' as const };
+    saveSettings(repo, { pricing: { [key]: override } });
+    expect(loadSettings(repo).pricing[key]).toEqual(override);
+    saveSettings(repo, { animationSpeed: 'fast', pricingRemove: ['openai:fixture-x', key] });
+    const after = loadSettings(repo);
+    expect(after.pricing[key]).toEqual(DEFAULT_PRICING[key]);
+    expect(after.animationSpeed).toBe('fast');
+    // Removing a built-in key that has no override changes nothing.
+    saveSettings(repo, { pricingRemove: [key] });
+    expect(loadSettings(repo).pricing[key]).toEqual(DEFAULT_PRICING[key]);
+
+    // builtInPricingKeys is read-only: accepted on input (a client may send its settings back) and ignored.
+    const echoed = saveSettings(repo, { builtInPricingKeys: ['openai:fixture-fake'], reduceMotion: 'on' });
+    expect(echoed.builtInPricingKeys).toEqual(builtIn);
+    expect(repo.getSetting<Record<string, unknown>>(SETTINGS_KEY)).not.toHaveProperty('builtInPricingKeys');
+
+    // A key both removed and set in one patch ends up with the entry that was sent.
+    const fresh = { inputPerMTokUsd: 5, outputPerMTokUsd: 5, source: 'user' as const };
+    saveSettings(repo, { pricing: { 'openai:fixture-y': { ...fresh, inputPerMTokUsd: 1 } } });
+    saveSettings(repo, { pricingRemove: ['openai:fixture-y'], pricing: { 'openai:fixture-y': fresh } });
+    expect(loadSettings(repo).pricing['openai:fixture-y']).toEqual(fresh);
+
+    // Shape checks.
+    for (const bad of ['openai:fixture-x', [42], ['x'], Array.from({ length: 1_001 }, (_, i) => `openai:fixture-${i}`)]) {
+      expect(() => saveSettings(repo, { pricingRemove: bad })).toThrow(expect.objectContaining({ code: 'validation_error' }));
+    }
+    repo.close();
+  });
+
+  it('a pricing key "__proto__" (set or removed) never changes a prototype or pollutes objects', () => {
+    const repo = openRepository(':memory:');
+    const patch = JSON.parse('{"pricing":{"__proto__":{"inputPerMTokUsd":1,"outputPerMTokUsd":1,"source":"user"},"openai:fixture-p":{"inputPerMTokUsd":2,"outputPerMTokUsd":2,"source":"user"}}}');
+    const s = saveSettings(repo, patch);
+    expect(Object.getPrototypeOf(s.pricing)).toBe(Object.prototype);
+    expect(s.pricing['openai:fixture-p']).toMatchObject({ inputPerMTokUsd: 2 });
+    saveSettings(repo, { pricingRemove: ['__proto__', 'constructor'] });
+    const after = loadSettings(repo).pricing;
+    expect(Object.getPrototypeOf(after)).toBe(Object.prototype);
+    expect(after['openai:fixture-p']).toMatchObject({ inputPerMTokUsd: 2 });
+    expect(({} as Record<string, unknown>).inputPerMTokUsd).toBeUndefined();
+    repo.close();
+  });
+
+  it('a partial limits object never resets a saved default it omits (allowModelStop has no default in a partial)', () => {
+    const repo = openRepository(':memory:');
+    // Create-session requests: an omitted allowModelStop stays omitted (merged with the saved default later).
+    expect(validateCreateSessionRequest({ player: { kind: 'demo' }, limits: { maxRounds: 1 } }).limits).toEqual({ maxRounds: 1 });
+    expect(validateCreateSessionRequest({ player: { kind: 'demo' }, limits: { allowModelStop: true } }).limits).toEqual({ allowModelStop: true });
+    // Settings patches: a later partial defaultLimits patch keeps allowModelStop=true.
+    saveSettings(repo, { defaultLimits: { allowModelStop: true, maxConsecutiveFailures: 3 } });
+    saveSettings(repo, { defaultLimits: { maxRounds: 10 } });
+    expect(loadSettings(repo).defaultLimits).toMatchObject({ allowModelStop: true, maxConsecutiveFailures: 3, maxRounds: 10 });
+    // A complete limits object still defaults it (older stored sessions carry no value).
+    const { allowModelStop: _omitted, ...withoutStop } = DEFAULT_LIMITS;
+    expect(validateLimits(withoutStop).allowModelStop).toBe(false);
     repo.close();
   });
 

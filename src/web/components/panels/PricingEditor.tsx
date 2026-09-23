@@ -9,8 +9,9 @@ import { TextField } from '../common/TextField';
 /**
  * Pricing assumptions per provider:model (USD per million tokens). Used ONLY to estimate cost, always
  * labelled as an assumption; the user is responsible for checking current provider prices.
- * Default assumptions ship with the app: they can be edited (which saves your own value) but not removed.
- * Your own entries can be removed; saving sends the complete set, so a removed entry stays removed.
+ * Rows for a built-in default key (row.builtIn, from AppSettings.builtInPricingKeys) ship with the app: they
+ * can be edited (which saves your own value) but not removed. Every other row can be removed, whatever its
+ * source; the save sends the removal explicitly (pricingRemove), so a removed row stays removed.
  */
 export interface PricingEditorProps {
   readonly rows: readonly PricingRow[];
@@ -18,11 +19,20 @@ export interface PricingEditorProps {
   readonly onChange: (key: string, field: 'input' | 'output' | 'cacheRead' | 'cacheWrite', value: string) => void;
   readonly onAdd: (key: string) => void;
   readonly onRemove: (key: string) => void;
+  /** Drop the user's override of a built-in row on save (it returns to the built-in default). */
+  readonly onReset?: (key: string) => void;
   /** Suggested key for the player being configured, e.g. "anthropic:<model>". */
   readonly suggestedKey: string | null;
 }
 
-export function PricingEditor({ rows, errors, onChange, onAdd, onRemove, suggestedKey }: Readonly<PricingEditorProps>) {
+function rowLabel(r: PricingRow): string {
+  if (r.dirty) return 'edited';
+  if (r.source === 'user') return 'your value';
+  // A default assumption whose key is not (or no longer) a built-in default: removable like any other entry.
+  return r.builtIn ? 'default assumption' : 'default assumption (not built in)';
+}
+
+export function PricingEditor({ rows, errors, onChange, onAdd, onRemove, onReset, suggestedKey }: Readonly<PricingEditorProps>) {
   const [newKey, setNewKey] = useState('');
   const add = (key: string) => {
     const k = key.trim();
@@ -35,10 +45,10 @@ export function PricingEditor({ rows, errors, onChange, onAdd, onRemove, suggest
         <Badge tone="warning">{COPY.pricingAssumption}</Badge>
       </p>
       {rows.length === 0 ? <p className="m-0 text-xs text-ink-muted">No pricing assumptions saved. Cost stays “unknown” without one.</p> : null}
-      {rows.some((r) => r.source === 'default-assumption') ? (
+      {rows.some((r) => r.builtIn) ? (
         <p className="m-0 text-[11px] text-ink-muted">
-          Default assumptions come with the app and cannot be removed; edit one to save your own value. Removing your own value
-          for such a model brings the default back.
+          Built-in default assumptions come with the app and cannot be removed; edit one to save your own value for that model,
+          and “Reset to default” brings the built-in value back. Every other entry can be removed.
         </p>
       ) : null}
       {rows.map((r) => (
@@ -46,7 +56,7 @@ export function PricingEditor({ rows, errors, onChange, onAdd, onRemove, suggest
           <legend className="flex items-center gap-1.5 px-1 font-mono text-[11px] font-semibold text-ink">
             {r.key}
             <Badge tone={r.dirty || r.source === 'user' ? 'secondary' : 'neutral'}>
-              {r.dirty ? 'edited' : r.source === 'user' ? 'your value' : 'default assumption'}
+              {rowLabel(r)}
             </Badge>
             {r.asOf && !r.dirty ? <span className="font-normal text-ink-muted">as of {r.asOf}</span> : null}
           </legend>
@@ -57,9 +67,31 @@ export function PricingEditor({ rows, errors, onChange, onAdd, onRemove, suggest
             <TextField label="Cache write $/MTok" mono value={r.cacheWrite} onChange={(v) => onChange(r.key, 'cacheWrite', v)} inputMode="decimal" />
           </div>
           {errors[r.key] ? <p className="m-0 mt-1 text-[11px] text-danger">{errors[r.key]}</p> : null}
-          {r.source === 'default-assumption' ? null : (
-            <Button size="sm" variant="quiet" className="mt-1" icon={<X aria-hidden="true" className="h-3.5 w-3.5" />} onClick={() => onRemove(r.key)}>
-              Remove<span className="sr-only"> {r.key}</span>
+          {r.builtIn && r.resetPending ? (
+            <p className="m-0 mt-1 text-[11px] text-ink-muted">Resets to the built-in default when you save.</p>
+          ) : null}
+          {r.builtIn && r.source === 'user' && !r.resetPending && onReset ? (
+            <Button
+              size="sm"
+              variant="quiet"
+              className="mt-1"
+              aria-label={`Reset ${r.key} to the built-in default`}
+              icon={<X aria-hidden="true" className="h-3.5 w-3.5" />}
+              onClick={() => onReset(r.key)}
+            >
+              Reset to default
+            </Button>
+          ) : null}
+          {r.builtIn ? null : (
+            <Button
+              size="sm"
+              variant="quiet"
+              className="mt-1"
+              aria-label={`Remove ${r.key}`}
+              icon={<X aria-hidden="true" className="h-3.5 w-3.5" />}
+              onClick={() => onRemove(r.key)}
+            >
+              Remove
             </Button>
           )}
         </fieldset>
