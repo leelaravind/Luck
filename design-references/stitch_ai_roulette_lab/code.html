@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+
+<html lang="en"><head><meta charset="utf-8"/><meta content="width=device-width, initial-scale=1.0" name="viewport"/><meta content="web_dashboard" name="shell-type"/><link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet"/><link href="https://fonts.googleapis.com" rel="preconnect"/><link crossorigin="" href="https://fonts.gstatic.com" rel="preconnect"/><link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/><style>@layer base { html, body { margin: 0; padding: 0; } body { overscroll-behavior: none; } main > :first-child { margin-top: 0 !important; } main > :last-child { margin-bottom: 0 !important; } } ::-webkit-scrollbar { display: none; }</style><script src="https://cdn.tailwindcss.com"></script><script id="tailwind-config">tailwind.config = { darkMode: "class", theme: { extend: { "colors": { "surface-tint": "#006a61", "primary-fixed-dim": "#6bd8cb", "on-tertiary": "#ffffff", "secondary": "#4b41e1", "surface-container": "#e7eeff", "on-background": "#111c2d", "on-secondary-fixed-variant": "#3323cc", "on-surface-variant": "#3d4947", "inverse-primary": "#6bd8cb", "on-tertiary-fixed": "#002114", "surface-container-highest": "#d8e3fb", "on-primary": "#ffffff", "tertiary-container": "#00855d", "primary": "#00685f", "secondary-fixed-dim": "#c3c0ff", "background": "#f9f9ff", "secondary-fixed": "#e2dfff", "error": "#ba1a1a", "on-error-container": "#93000a", "secondary-container": "#645efb", "surface-bright": "#f9f9ff", "surface-container-lowest": "#ffffff", "outline": "#6d7a77", "on-primary-fixed-variant": "#005049", "primary-fixed": "#89f5e7", "tertiary-fixed-dim": "#68dba9", "on-tertiary-fixed-variant": "#005137", "surface-container-high": "#dee8ff", "error-container": "#ffdad6", "on-primary-container": "#f4fffc", "surface-dim": "#cfdaf2", "inverse-surface": "#263143", "on-error": "#ffffff", "surface": "#f9f9ff", "on-secondary-fixed": "#0f0069", "primary-container": "#008378", "surface-container-low": "#f0f3ff", "on-primary-fixed": "#00201d", "surface-variant": "#d8e3fb", "on-secondary": "#ffffff", "inverse-on-surface": "#ecf1ff", "outline-variant": "#bcc9c6", "on-secondary-container": "#fffbff", "on-surface": "#111c2d", "tertiary-fixed": "#85f8c4", "tertiary": "#006948", "on-tertiary-container": "#f5fff7" }, "borderRadius": { "DEFAULT": "0.25rem", "lg": "0.5rem", "xl": "0.75rem", "full": "9999px" }, "spacing": { "margin-desktop": "2rem", "space-sm": "0.5rem", "margin": "1rem", "space-xl": "2rem", "gutter-desktop": "1.5rem", "gutter": "1rem", "space-lg": "1.5rem", "space-xs": "0.25rem", "space-md": "1rem" }, "fontFamily": { "code-metric": [ "JetBrains Mono" ], "label-sm": [ "JetBrains Mono" ], "body-lg": [ "Inter" ], "label-lg": [ "JetBrains Mono" ], "headline-lg": [ "Inter" ], "label-md": [ "JetBrains Mono" ], "headline-xl": [ "Inter" ], "headline-md": [ "Inter" ], "body-sm": [ "Inter" ], "body-md": [ "Inter" ], "headline-xl-mobile": [ "Inter" ], "headline-sm": [ "Inter" ] }, "fontSize": { "code-metric": [ "22px", { "lineHeight": "28px", "letterSpacing": "-0.03em", "fontWeight": "600" } ], "label-sm": [ "11px", { "lineHeight": "14px", "letterSpacing": "0.02em", "fontWeight": "500" } ], "body-lg": [ "16px", { "lineHeight": "26px", "fontWeight": "400" } ], "label-lg": [ "14px", { "lineHeight": "20px", "letterSpacing": "-0.01em", "fontWeight": "500" } ], "headline-lg": [ "24px", { "lineHeight": "32px", "letterSpacing": "-0.02em", "fontWeight": "600" } ], "label-md": [ "12px", { "lineHeight": "16px", "letterSpacing": "0em", "fontWeight": "500" } ], "headline-xl": [ "36px", { "lineHeight": "44px", "letterSpacing": "-0.025em", "fontWeight": "700" } ], "headline-md": [ "20px", { "lineHeight": "28px", "letterSpacing": "-0.015em", "fontWeight": "600" } ], "body-sm": [ "12px", { "lineHeight": "18px", "fontWeight": "400" } ], "body-md": [ "14px", { "lineHeight": "22px", "fontWeight": "400" } ], "headline-xl-mobile": [ "28px", { "lineHeight": "36px", "letterSpacing": "-0.02em", "fontWeight": "700" } ], "headline-sm": [ "16px", { "lineHeight": "24px", "letterSpacing": "-0.01em", "fontWeight": "600" } ] } } } };</script></head><body class="bg-surface font-body-md text-body-md text-on-surface antialiased min-h-screen"><header class="fixed top-0 left-0 right-0 h-16 z-50 bg-surface-container-lowest/90 backdrop-blur-xl shadow-[0_1px_8px_rgba(0,0,0,0.04)]"><div class="h-16 w-full px-gutter-desktop flex items-center justify-between gap-space-md"><div class="flex items-center gap-space-md"><img alt="Brand logo. - Primary color: #0d9488
+- Font: inter
+- Mode: light
+- Roundness: rounded-md
+" class="h-8 w-auto object-contain" src="https://lh3.googleusercontent.com/aida/AEtjO1WpVOvruUJ3ujyGkaEm8SnzPyazhzb1y9uKQcYxtGUit0Tz35Q2ieRVDlD73ZYkSFjo3SKA3sDIbljHv8E4OtUvShgyb7lFXsmi6tUpT0sBc5SdTr9pXMHEHL3_exZNRsiytl8f9Tl3ab8nI9X8tYTh7btqb56_kmiJlnJ7zBtffd-LIrDbwW-IGE-dEiR3oDDrPX8SOJZw5Vuc0Vr9fpjXQRYdHb31zcU6QDvnruHTTGbiMkkh5gQ2v2zl"/><span class="font-headline-sm text-headline-sm text-on-surface tracking-tight font-semibold">AI Roulette Lab</span><span class="px-space-sm py-0.5 rounded-full bg-surface-container-high text-on-surface-variant font-label-sm text-label-sm tracking-wide uppercase font-semibold">Simulation Only</span></div><div class="hidden md:flex items-center gap-space-lg"><div class="flex items-center gap-space-xs px-space-sm py-1 bg-surface-container-low rounded-lg"><span class="material-symbols-outlined text-primary text-[18px]">neurology</span><select class="bg-transparent font-label-md text-label-md text-on-surface font-medium focus:outline-none cursor-pointer pr-space-xs"><option value="claude-3-7">Claude 3.7 Sonnet (Reasoning)</option><option value="llama-3-70b">Ollama · Llama 3 70B Quant</option><option value="gpt-4o-mini">GPT-4o Mini Algorithmic</option></select></div><div class="flex items-center gap-space-xs font-label-sm text-label-sm text-on-surface-variant"><span class="w-2 h-2 rounded-full bg-tertiary-container animate-pulse"></span><span>Connected · WebSocket 18ms</span></div></div><div class="flex items-center gap-space-md"><button class="p-space-xs text-on-surface-variant hover:text-on-surface hover:bg-surface-container rounded-lg transition-colors" title="Simulation Parameters" type="button"><span class="material-symbols-outlined text-[20px]">settings</span></button><div class="w-8 h-8 rounded-full bg-primary flex items-center justify-center"><span class="material-symbols-outlined text-on-primary text-[18px]">person</span></div></div></div></header><aside class="fixed left-0 top-16 bottom-0 w-64 bg-surface-container-lowest shadow-[0_1px_8px_rgba(0,0,0,0.04)] z-40 flex flex-col justify-between p-space-md"><div class="flex flex-col gap-space-md"><div class="flex items-center justify-between pb-space-xs"><span class="font-label-sm text-label-sm uppercase text-on-surface-variant tracking-wider font-semibold">AI Player Telemetry</span><span class="px-space-xs py-0.5 rounded bg-primary-fixed text-on-primary-fixed font-label-sm text-label-sm font-semibold">AUTONOMOUS</span></div><nav class="flex flex-col gap-space-xs" data-active-classes="bg-primary-container text-on-primary-container font-semibold rounded-lg"><a aria-current="page" class="flex items-center gap-space-sm px-space-sm py-space-xs transition-all bg-primary-container text-on-primary-container font-semibold rounded-lg" data-path="live-simulation" href="#"><span class="material-symbols-outlined text-[18px]">play_circle</span><span>Live Simulation</span></a><a class="flex items-center gap-space-sm px-space-sm py-space-xs rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all font-body-sm text-body-sm" data-path="agent-strategies" href="#"><span class="material-symbols-outlined text-[18px]">account_tree</span><span>Agent Strategies</span></a><a class="flex items-center gap-space-sm px-space-sm py-space-xs rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all font-body-sm text-body-sm" data-path="monte-carlo-lab" href="#"><span class="material-symbols-outlined text-[18px]">query_stats</span><span>Monte Carlo Lab</span></a><a class="flex items-center gap-space-sm px-space-sm py-space-xs rounded-lg text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface transition-all font-body-sm text-body-sm" data-path="session-history" href="#"><span class="material-symbols-outlined text-[18px]">history</span><span>Session History</span></a></nav><div class="bg-surface-container-low rounded-xl p-space-sm flex flex-col gap-space-xs"><div class="flex items-center justify-between"><span class="font-label-sm text-label-sm text-on-surface-variant">Decision State</span><span class="font-label-sm text-label-sm text-tertiary font-semibold">EVALUATING</span></div><div class="font-code-metric text-code-metric text-on-surface">0.742<span class="font-label-sm text-label-sm text-on-surface-variant ml-1">EV</span></div><div class="font-body-sm text-body-sm text-on-surface-variant leading-tight">Targeting Tiers du Cylindre hedge. Kelly fraction: 0.024.</div></div></div><div class="bg-surface-container-low rounded-lg p-space-sm flex flex-col gap-space-xs"><span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Latest Agent Action</span><div class="flex items-center justify-between font-label-md text-label-md"><span class="text-on-surface font-medium">Split 8/11 + Red</span><span class="text-primary font-semibold">45 Units</span></div><div class="font-label-sm text-label-sm text-on-surface-variant">Latency: 142ms · Heuristic v2.4</div></div></aside><div class="pl-64"><main class="relative pt-16 w-full min-h-screen bg-surface"><div class="flex flex-col w-full">
+<div class="w-full bg-surface-bright px-space-md py-space-sm flex flex-col gap-space-sm select-none">
+<!-- TOP NOTIFICATION BANNER / SESSION CONTEXT -->
+<div class="flex items-center justify-between px-space-md py-1.5 rounded-lg bg-surface-container-low shadow-sm">
+<div class="flex items-center gap-space-md">
+<div class="flex items-center gap-space-xs">
+<span class="w-2.5 h-2.5 rounded-full bg-primary animate-pulse"></span>
+<span class="font-label-sm text-label-sm text-primary uppercase font-bold tracking-wider">Engine Active · In-Flight Spin</span>
+</div>
+<div class="h-3 w-[1px] bg-outline-variant/40"></div>
+<span class="font-body-sm text-body-sm text-on-surface-variant font-medium">Session UUID: <span class="font-label-sm text-label-sm text-on-surface font-semibold">sim-eu-8492-claude</span></span>
+<div class="h-3 w-[1px] bg-outline-variant/40"></div>
+<span class="font-body-sm text-body-sm text-on-surface-variant">Wheel Physics: <span class="font-label-sm text-label-sm text-tertiary font-semibold">Standard 37-Pocket European (0.027 House Edge)</span></span>
+</div>
+<div class="flex items-center gap-space-lg">
+<div class="flex items-center gap-space-xs">
+<span class="material-symbols-outlined text-[16px] text-on-surface-variant">memory</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant">Stochastic Drift: <strong class="text-on-surface font-semibold font-code-metric">0.0014σ</strong></span>
+</div>
+<div class="flex items-center gap-space-xs bg-surface-container-highest/60 px-space-xs py-0.5 rounded text-on-surface-variant font-label-sm text-label-sm">
+<span class="material-symbols-outlined text-[14px]">speed</span>
+<span id="fps-counter">59.8 FPS</span>
+</div>
+</div>
+</div>
+<!-- MAIN TWO-COLUMN DASHBOARD (TELEMETRY SIDEBAR + GRAND EMERALD FELT) -->
+<div class="grid grid-cols-12 gap-space-md items-start w-full">
+<!-- LEFT COLUMN: AI TELEMETRY PANEL (~260-320px depending on 12-col grid) -->
+<section class="col-span-12 lg:col-span-3 flex flex-col gap-space-sm bg-surface-container-lowest p-space-md rounded-xl shadow-[0_1px_3px_rgba(30,41,59,0.04),0_6px_16px_-4px_rgba(30,41,59,0.03)]">
+<!-- Header & Agent State -->
+<div class="flex items-center justify-between pb-space-xs">
+<div class="flex items-center gap-space-xs">
+<span class="w-2.5 h-2.5 rounded-full bg-primary animate-ping"></span>
+<span class="font-headline-sm text-headline-sm text-on-surface font-semibold tracking-tight">AI Player</span>
+</div>
+<span class="px-space-xs py-0.5 rounded-full bg-primary/10 text-primary font-label-sm text-label-sm font-semibold tracking-wide">ACTIVE · THINKING</span>
+</div>
+<!-- Provider Switcher -->
+<div class="grid grid-cols-3 gap-1 p-1 bg-surface-container-low rounded-lg">
+<button class="py-1 px-space-xs text-center rounded-md font-label-sm text-label-sm font-semibold bg-surface-container-lowest shadow-sm text-primary transition-all" id="tab-cloud" onclick="switchProvider('cloud')" type="button">Cloud API</button>
+<button class="py-1 px-space-xs text-center rounded-md font-label-sm text-label-sm font-medium text-on-surface-variant hover:text-on-surface transition-all" id="tab-cli" onclick="switchProvider('cli')" type="button">CLI Bridge</button>
+<button class="py-1 px-space-xs text-center rounded-md font-label-sm text-label-sm font-medium text-on-surface-variant hover:text-on-surface transition-all" id="tab-ollama" onclick="switchProvider('ollama')" type="button">Local Ollama</button>
+</div>
+<!-- Active Model & Runtime Duration -->
+<div class="flex flex-col gap-1 p-space-sm rounded-lg bg-surface-container-low/70">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant uppercase font-semibold">Active Model</span>
+<span class="font-label-sm text-label-sm text-on-surface-variant font-mono">00:42:18</span>
+</div>
+<div class="font-body-sm text-body-sm text-on-surface font-semibold flex items-center gap-1.5">
+<span class="material-symbols-outlined text-[16px] text-secondary">psychology</span>
+            Claude 3.7 Sonnet (Thinking)
+          </div>
+</div>
+<!-- Essential Telemetry Grid (Demo Data) -->
+<div class="flex flex-col gap-space-xs">
+<div class="flex items-center justify-between text-on-surface-variant font-label-sm text-label-sm">
+<span>Essential Telemetry</span>
+<span class="text-on-surface-variant/70 italic text-[10px]">Demo Data</span>
+</div>
+<div class="grid grid-cols-2 gap-2">
+<div class="p-space-xs rounded-lg bg-surface-container-low flex flex-col">
+<span class="font-label-sm text-label-sm text-on-surface-variant">Tokens In / Out</span>
+<span class="font-code-metric text-[14px] text-on-surface font-semibold">42.8k <span class="text-on-surface-variant font-normal">/ 9.1k</span></span>
+<span class="font-label-sm text-[10px] text-on-surface-variant mt-0.5">Total: 51.9k</span>
+</div>
+<div class="p-space-xs rounded-lg bg-surface-container-low flex flex-col">
+<span class="font-label-sm text-label-sm text-on-surface-variant">Est. API Cost</span>
+<span class="font-code-metric text-[14px] text-on-surface font-semibold">£0.184</span>
+<span class="font-label-sm text-[10px] text-tertiary mt-0.5">Budget £5.00</span>
+</div>
+<div class="p-space-xs rounded-lg bg-surface-container-low flex flex-col col-span-2">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm text-on-surface-variant">Last Latency</span>
+<span class="font-code-metric text-code-metric text-primary font-bold">412ms</span>
+</div>
+<div class="w-full bg-surface-container-high h-1.5 rounded-full overflow-hidden mt-1">
+<div class="bg-primary h-full rounded-full" style="width: 32%"></div>
+</div>
+</div>
+</div>
+</div>
+<!-- Quota & Capacity Usage -->
+<div class="flex flex-col gap-space-xs pt-1">
+<div class="flex items-center justify-between font-label-sm text-label-sm">
+<span class="text-on-surface-variant font-semibold">Session Quota</span>
+<span class="font-code-metric text-on-surface font-semibold">20.8% (51.9k / 250k)</span>
+</div>
+<div class="w-full bg-surface-container h-1.5 rounded-full overflow-hidden">
+<div class="bg-secondary h-full rounded-full" style="width: 20.8%"></div>
+</div>
+<div class="flex items-center justify-between font-label-sm text-label-sm mt-1">
+<span class="text-on-surface-variant font-semibold">Weekly Cloud Limit</span>
+<span class="font-code-metric text-on-surface font-semibold">24.8%</span>
+</div>
+<div class="w-full bg-surface-container h-1.5 rounded-full overflow-hidden">
+<div class="bg-primary-container h-full rounded-full" style="width: 24.8%"></div>
+</div>
+<div class="mt-1 p-space-xs rounded bg-surface-container-high/40 text-on-surface-variant font-label-sm text-[10px] leading-tight flex items-start gap-1" id="ollama-notice">
+<span class="material-symbols-outlined text-[13px] text-on-surface-variant">info</span>
+<span>When switched to Local Ollama: Local inference · Cloud quotas do not apply.</span>
+</div>
+</div>
+<!-- Latest Agent Action Card -->
+<div class="mt-space-xs p-space-sm rounded-xl bg-surface-container-high/60 shadow-inner flex flex-col gap-space-xs">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant font-bold">Latest Action</span>
+<span class="px-space-xs py-0.5 rounded bg-primary-fixed text-on-primary-fixed font-label-sm text-[10px] font-bold">Round #38</span>
+</div>
+<div class="font-headline-sm text-[14px] text-primary font-bold leading-tight">
+            Bet V$ 30 on RED, V$ 20 on 1st DOZEN
+          </div>
+<div class="font-body-sm text-[12px] text-on-surface-variant bg-surface-container-lowest p-space-xs rounded font-mono leading-relaxed">
+            “Observing low red cluster in recent 12 spins. Hedging variance on 1st dozen.”
+          </div>
+<div class="flex items-center justify-between pt-1 font-label-sm text-[10px] text-on-surface-variant font-mono">
+<span>Confidence: 81.4%</span>
+<span>Kelly f*: 0.038</span>
+</div>
+</div>
+<!-- Live Heuristic Stream -->
+<div class="flex flex-col gap-1">
+<div class="flex items-center justify-between font-label-sm text-label-sm text-on-surface-variant">
+<span>Reasoning Stack</span>
+<span class="text-tertiary font-semibold">v3.4-Dynamic</span>
+</div>
+<div class="flex flex-col gap-1 text-[11px] font-mono text-on-surface-variant bg-surface-container-low p-space-xs rounded-lg">
+<div class="flex items-center justify-between">
+<span>Hedge ratio:</span>
+<span class="text-on-surface font-semibold">1.50x</span>
+</div>
+<div class="flex items-center justify-between">
+<span>Risk appetite:</span>
+<span class="text-primary font-semibold">CONSERVATIVE</span>
+</div>
+<div class="flex items-center justify-between">
+<span>Streak bias:</span>
+<span class="text-on-surface font-semibold">-0.12 (Mean Rev)</span>
+</div>
+</div>
+</div>
+</section>
+<!-- CENTER & RIGHT AREA: GRAND EMERALD CASINO TABLE CANVAS -->
+<section class="col-span-12 lg:col-span-9 flex flex-col gap-space-sm">
+<!-- EMERALD CASINO MAT CONTAINER -->
+<div class="w-full rounded-2xl shadow-xl overflow-hidden p-space-md flex flex-col gap-space-md relative" style="background: radial-gradient(circle at 50% 30%, #155e42 0%, #0c432f 55%, #072a1e 100%);">
+<!-- FELT SUBTLE NOISE & VIGNETTE ACCENT OVERLAY -->
+<div class="absolute inset-0 pointer-events-none opacity-20 bg-[radial-gradient(#ffffff_1px,transparent_1px)] [background-size:16px_16px]"></div>
+<!-- TOP FELT SECTION: WHEEL, RECENT SPINS, SECTOR CHARTS -->
+<div class="relative z-10 grid grid-cols-12 gap-space-md items-center">
+<!-- RECENT RESULTS & HOT/COLD STATS (LEFT) -->
+<div class="col-span-12 md:col-span-3 flex flex-col gap-space-sm bg-black/25 backdrop-blur-sm p-space-sm rounded-xl text-on-primary shadow-inner">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-[#e2c974] font-bold">Recent Results</span>
+<span class="font-label-sm text-[10px] text-white/70 font-mono">Last 5</span>
+</div>
+<!-- Recent Number Balls -->
+<div class="flex items-center justify-between gap-1">
+<div class="w-9 h-9 rounded-full bg-[#ba1a1a] text-white flex items-center justify-center font-bold text-[14px] shadow-md ring-2 ring-[#e2c974]/80">32</div>
+<div class="w-9 h-9 rounded-full bg-[#1e293b] text-white flex items-center justify-center font-bold text-[14px] shadow-md">15</div>
+<div class="w-9 h-9 rounded-full bg-[#ba1a1a] text-white flex items-center justify-center font-bold text-[14px] shadow-md">19</div>
+<div class="w-9 h-9 rounded-full bg-[#1e293b] text-white flex items-center justify-center font-bold text-[14px] shadow-md">4</div>
+<div class="w-9 h-9 rounded-full bg-[#ba1a1a] text-white flex items-center justify-center font-bold text-[14px] shadow-md">21</div>
+</div>
+<!-- Hot / Cold Indicators -->
+<div class="flex flex-col gap-1 pt-1 border-t border-white/10 font-label-sm text-label-sm">
+<div class="flex items-center justify-between">
+<span class="text-white/80 flex items-center gap-1">🔥 Hot Pockets</span>
+<div class="flex items-center gap-1 font-mono font-bold">
+<span class="text-[#fca5a5]">32</span>·<span class="text-[#fca5a5]">36</span>·<span class="text-white">15</span>
+</div>
+</div>
+<div class="flex items-center justify-between">
+<span class="text-white/80 flex items-center gap-1">❄️ Cold Pockets</span>
+<div class="flex items-center gap-1 font-mono font-bold">
+<span class="text-sky-300">4</span>·<span class="text-sky-300">11</span>·<span class="text-white">10</span>
+</div>
+</div>
+</div>
+</div>
+<!-- CENTRAL ILLUSTRATED EUROPEAN ROULETTE WHEEL -->
+<div class="col-span-12 md:col-span-6 flex flex-col items-center justify-center relative py-1">
+<!-- European Roulette Wheel Container -->
+<div class="relative w-64 h-64 md:w-72 md:h-72 rounded-full p-2.5 shadow-[0_20px_45px_rgba(0,0,0,0.6)] flex items-center justify-center" style="background: radial-gradient(circle, #5c3a21 0%, #3e2210 65%, #241207 100%);">
+<!-- Polished Gold Outer Rim Track -->
+<div class="absolute inset-1.5 rounded-full border-[3px] border-[#e2c974]/80 shadow-inner"></div>
+<!-- Ball Track Silver Channel with Dynamic Ball -->
+<div class="absolute inset-4 rounded-full border-[6px] border-[#8e98a0]/50 flex items-center justify-center">
+<!-- The Spinning Silver Ball (In-Flight near pocket 32) -->
+<div class="absolute top-2 right-12 w-4 h-4 rounded-full bg-gradient-to-br from-white via-[#e2e8f0] to-[#94a3b8] shadow-[0_0_8px_#ffffff,0_2px_4px_rgba(0,0,0,0.8)] animate-bounce"></div>
+</div>
+<!-- Numbered Pockets Ring (37 European Pockets) -->
+<div class="relative w-48 h-48 md:w-52 md:h-52 rounded-full overflow-hidden shadow-inner flex items-center justify-center bg-[#1a140f]">
+<!-- Pocket graphic rings & rays -->
+<svg class="w-full h-full animate-[spin_18s_linear_infinite]" viewbox="0 0 200 200">
+<!-- Outer segments representation -->
+<circle cx="100" cy="100" fill="none" r="94" stroke="#221711" stroke-width="12"></circle>
+<!-- Green zero wedge -->
+<path d="M100 100 L95 6 A94 94 0 0 1 105 6 Z" fill="#006948" stroke="#e2c974" stroke-width="0.8"></path>
+<text fill="#ffffff" font-family="JetBrains Mono" font-size="7" font-weight="bold" text-anchor="middle" x="100" y="24">0</text>
+<!-- Alternating Red / Black pockets wedges simplified high-precision vector -->
+<!-- Wedge 32 Red -->
+<path d="M100 100 L105 6 A94 94 0 0 1 121 8 Z" fill="#ba1a1a" stroke="#e2c974" stroke-width="0.6"></path>
+<text fill="#ffffff" font-family="JetBrains Mono" font-size="6.5" font-weight="bold" text-anchor="middle" x="113" y="25">32</text>
+<!-- Wedge 15 Black -->
+<path d="M100 100 L121 8 A94 94 0 0 1 136 12 Z" fill="#111c2d" stroke="#e2c974" stroke-width="0.6"></path>
+<text fill="#ffffff" font-family="JetBrains Mono" font-size="6.5" font-weight="bold" text-anchor="middle" x="129" y="28">15</text>
+<!-- Wedge 19 Red -->
+<path d="M100 100 L136 12 A94 94 0 0 1 150 19 Z" fill="#ba1a1a" stroke="#e2c974" stroke-width="0.6"></path>
+<text fill="#ffffff" font-family="JetBrains Mono" font-size="6.5" font-weight="bold" text-anchor="middle" x="143" y="32">19</text>
+<!-- Wedge 4 Black -->
+<path d="M100 100 L150 19 A94 94 0 0 1 163 29 Z" fill="#111c2d" stroke="#e2c974" stroke-width="0.6"></path>
+<!-- Remainder of wheel radial styling -->
+<circle cx="100" cy="100" fill="#1e140d" r="76" stroke="#e2c974" stroke-width="1"></circle>
+<circle cx="100" cy="100" fill="#2d1c12" r="54"></circle>
+<!-- Turret Spokes in Polished Gold -->
+<line stroke="#e2c974" stroke-linecap="round" stroke-width="2.5" x1="100" x2="100" y1="46" y2="154"></line>
+<line stroke="#e2c974" stroke-linecap="round" stroke-width="2.5" x1="46" x2="154" y1="100" y2="100"></line>
+<line stroke="#e2c974" stroke-linecap="round" stroke-width="2" x1="62" x2="138" y1="62" y2="138"></line>
+<line stroke="#e2c974" stroke-linecap="round" stroke-width="2" x1="138" x2="62" y1="62" y2="138"></line>
+<!-- Central Golden Finial (Center Hub) -->
+<circle cx="100" cy="100" fill="url(#goldGrad)" filter="drop-shadow(0 4px 6px rgba(0,0,0,0.5))" r="22" stroke="#fae8a4" stroke-width="2"></circle>
+<circle cx="100" cy="100" fill="#583907" r="8"></circle>
+<defs>
+<lineargradient id="goldGrad" x1="0%" x2="100%" y1="0%" y2="100%">
+<stop offset="0%" stop-color="#fff2b2"></stop>
+<stop offset="50%" stop-color="#e2c974"></stop>
+<stop offset="100%" stop-color="#997b2c"></stop>
+</lineargradient>
+</defs>
+</svg>
+</div>
+</div>
+</div>
+<!-- SECTOR WHEEL CHART & LAST SPUN (RIGHT) -->
+<div class="col-span-12 md:col-span-3 flex flex-col gap-space-sm bg-black/25 backdrop-blur-sm p-space-sm rounded-xl text-on-primary shadow-inner">
+<div class="flex items-center justify-between">
+<span class="font-label-sm text-label-sm uppercase tracking-wider text-[#e2c974] font-bold">Sector Density</span>
+<span class="font-label-sm text-[10px] text-white/70 font-mono">French Sectors</span>
+</div>
+<!-- Sector distribution progress breakdown -->
+<div class="flex flex-col gap-1.5 font-label-sm text-label-sm">
+<div>
+<div class="flex justify-between text-white/80 pb-0.5">
+<span>Voisins du Zéro</span>
+<span class="font-mono font-bold text-[#85f8c4]">45.9%</span>
+</div>
+<div class="w-full bg-black/40 h-1 rounded-full overflow-hidden">
+<div class="bg-[#00855d] h-full" style="width: 45.9%"></div>
+</div>
+</div>
+<div>
+<div class="flex justify-between text-white/80 pb-0.5">
+<span>Tiers du Cylindre</span>
+<span class="font-mono font-bold text-white">32.4%</span>
+</div>
+<div class="w-full bg-black/40 h-1 rounded-full overflow-hidden">
+<div class="bg-amber-500 h-full" style="width: 32.4%"></div>
+</div>
+</div>
+<div>
+<div class="flex justify-between text-white/80 pb-0.5">
+<span>Orphelins (Hedge)</span>
+<span class="font-mono font-bold text-white">21.7%</span>
+</div>
+<div class="w-full bg-black/40 h-1 rounded-full overflow-hidden">
+<div class="bg-sky-400 h-full" style="width: 21.7%"></div>
+</div>
+</div>
+</div>
+<!-- Last Spun Highlight Strip -->
+<div class="mt-1 p-space-xs rounded-lg bg-black/35 flex items-center justify-between border-l-2 border-[#e2c974]">
+<div class="flex flex-col">
+<span class="font-label-sm text-[9px] uppercase tracking-wider text-white/60 font-semibold">Last Settled</span>
+<span class="font-label-md text-label-md text-white font-bold">32 Red · Orphelins</span>
+</div>
+<span class="px-2 py-0.5 rounded bg-[#ba1a1a] text-white font-mono font-bold text-xs">V$ +70</span>
+</div>
+</div>
+</div>
+<!-- STATUS STRIP: FULL-WIDTH PULSING BAR -->
+<div class="relative z-10 w-full py-2 px-space-md rounded-xl bg-gradient-to-r from-black/60 via-black/40 to-black/60 backdrop-blur-md flex items-center justify-between border border-[#e2c974]/30 shadow-md">
+<div class="flex items-center gap-space-sm">
+<span class="material-symbols-outlined text-[#85f8c4] animate-spin text-[20px]">sync</span>
+<span class="font-label-md text-label-md font-bold tracking-widest text-white uppercase">
+                BETS PLACED — SPINNING WHEEL (IN FLIGHT)
+              </span>
+</div>
+<div class="flex items-center gap-space-md font-label-sm text-label-sm">
+<span class="text-[#e2c974] font-semibold">Round #38</span>
+<span class="text-white/60">|</span>
+<span class="text-white/80 font-mono tracking-wide">Virtual Credits Only</span>
+<div class="w-24 bg-white/20 h-2 rounded-full overflow-hidden ml-2 hidden sm:block">
+<div class="bg-[#85f8c4] h-full animate-[pulse_1s_ease-in-out_infinite]" style="width: 68%"></div>
+</div>
+</div>
+</div>
+<!-- LOWER SECTION: AUTHENTIC EUROPEAN BETTING FELT WITH CRISP CHAMPAGNE GOLD LINES -->
+<div class="relative z-10 w-full flex flex-col xl:flex-row gap-space-md items-center justify-between pt-1">
+<!-- MAIN TABLE GRID (Numbers, Dozens, Outside bets) -->
+<div class="w-full xl:w-[78%] flex flex-col font-sans select-none shadow-2xl rounded-lg p-1" style="background-color: rgba(6, 40, 28, 0.45);">
+<!-- GRID: ZERO + 3 ROWS OF 12 NUMBERS + 2 TO 1 COLUMNS -->
+<div class="grid grid-cols-[48px_repeat(12,1fr)_48px] gap-[2px] bg-[#e2c974]/40 p-[2px] rounded-t-md">
+<!-- GREEN ZERO (SPANS ALL 3 ROWS) -->
+<div class="row-span-3 bg-[#006948] text-white flex flex-col items-center justify-center font-bold text-[20px] font-mono cursor-pointer hover:brightness-110 transition-all rounded-l-md shadow-inner">
+<span>0</span>
+</div>
+<!-- ROW 1 (TOP: 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36) -->
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">3</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">6</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">9</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">12</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">15</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">18</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">21</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">24</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">27</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">30</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">33</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">36</div>
+<div class="h-10 bg-[#0c432f] text-[#e2c974] flex items-center justify-center font-bold text-[11px] uppercase tracking-tighter">2:1</div>
+<!-- ROW 2 (MIDDLE: 2, 5, 8, 11, 14, 17, 20, 23, 26, 29, 32, 35) -->
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">2</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">5</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">8</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">11</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">14</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">17</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">20</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">23</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">26</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">29</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px] relative">
+                  32
+                  <!-- Subtly active recent marker halo -->
+<div class="absolute -top-1 -right-1 w-2.5 h-2.5 bg-yellow-400 rounded-full"></div>
+</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">35</div>
+<div class="h-10 bg-[#0c432f] text-[#e2c974] flex items-center justify-center font-bold text-[11px] uppercase tracking-tighter">2:1</div>
+<!-- ROW 3 (BOTTOM: 1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34) -->
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">1</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">4</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">7</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">10</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">13</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">16</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">19</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">22</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">25</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">28</div>
+<div class="h-10 bg-[#111c2d] text-white flex items-center justify-center font-bold font-mono text-[14px]">31</div>
+<div class="h-10 bg-[#ba1a1a] text-white flex items-center justify-center font-bold font-mono text-[14px]">34</div>
+<div class="h-10 bg-[#0c432f] text-[#e2c974] flex items-center justify-center font-bold text-[11px] uppercase tracking-tighter">2:1</div>
+</div>
+<!-- DOZENS ROW (1st 12, 2nd 12, 3rd 12) -->
+<div class="grid grid-cols-[48px_repeat(3,1fr)_48px] gap-[2px] bg-[#e2c974]/40 p-[2px] mt-[1px]">
+<div class="bg-transparent"></div>
+<!-- 1st 12 (AI HAS PLACED V$20 CHIP HERE) -->
+<div class="h-9 bg-[#0b3e2b] text-[#e2c974] font-bold font-label-md flex items-center justify-center relative cursor-pointer shadow-inner ring-2 ring-[#e2c974]">
+<span>1st 12</span>
+<!-- 3D CASINO CHIP PLACED: V$ 20 -->
+<div class="absolute -top-2.5 right-6 w-8 h-8 rounded-full bg-gradient-to-tr from-sky-700 via-sky-500 to-sky-300 text-white font-mono font-bold text-[9px] flex items-center justify-center border-2 border-dashed border-white shadow-[0_4px_8px_rgba(0,0,0,0.5)] z-20 transform hover:scale-110 transition-transform">
+                    20
+                  </div>
+</div>
+<!-- 2nd 12 -->
+<div class="h-9 bg-[#0b3e2b] text-[#e2c974] font-bold font-label-md flex items-center justify-center cursor-pointer">
+<span>2nd 12</span>
+</div>
+<!-- 3rd 12 -->
+<div class="h-9 bg-[#0b3e2b] text-[#e2c974] font-bold font-label-md flex items-center justify-center cursor-pointer">
+<span>3rd 12</span>
+</div>
+<div class="bg-transparent"></div>
+</div>
+<!-- OUTSIDE BETS ROW (1-18, EVEN, RED, BLACK, ODD, 19-36) -->
+<div class="grid grid-cols-[48px_repeat(6,1fr)_48px] gap-[2px] bg-[#e2c974]/40 p-[2px] mt-[1px] rounded-b-md">
+<div class="bg-transparent"></div>
+<div class="h-9 bg-[#0b3e2b] text-[#e2c974] font-bold font-label-sm flex items-center justify-center uppercase tracking-tight cursor-pointer">1 to 18</div>
+<div class="h-9 bg-[#0b3e2b] text-[#e2c974] font-bold font-label-sm flex items-center justify-center uppercase tracking-tight cursor-pointer">EVEN</div>
+<!-- RED DIAMOND (AI HAS PLACED V$ 30 CHIP HERE) -->
+<div class="h-9 bg-[#ba1a1a] text-white font-bold font-label-sm flex items-center justify-center relative cursor-pointer ring-2 ring-[#e2c974] shadow-inner">
+<div class="w-4 h-4 rotate-45 bg-white/20 mr-1.5 flex items-center justify-center">
+<span class="rotate-[-45deg] text-[10px]">♦</span>
+</div>
+<span class="tracking-widest">RED</span>
+<!-- 3D CASINO CHIP PLACED: V$ 30 -->
+<div class="absolute -top-3 left-4 w-9 h-9 rounded-full bg-gradient-to-tr from-amber-600 via-amber-400 to-yellow-200 text-black font-mono font-bold text-[10px] flex items-center justify-center border-2 border-dashed border-black shadow-[0_5px_10px_rgba(0,0,0,0.6)] z-20">
+                    30
+                  </div>
+</div>
+<!-- BLACK DIAMOND -->
+<div class="h-9 bg-[#111c2d] text-white font-bold font-label-sm flex items-center justify-center cursor-pointer">
+<div class="w-4 h-4 rotate-45 bg-white/20 mr-1.5 flex items-center justify-center">
+<span class="rotate-[-45deg] text-[10px]">♦</span>
+</div>
+<span class="tracking-widest">BLACK</span>
+</div>
+<div class="h-9 bg-[#0b3e2b] text-[#e2c974] font-bold font-label-sm flex items-center justify-center uppercase tracking-tight cursor-pointer">ODD</div>
+<div class="h-9 bg-[#0b3e2b] text-[#e2c974] font-bold font-label-sm flex items-center justify-center uppercase tracking-tight cursor-pointer">19 to 36</div>
+<div class="bg-transparent"></div>
+</div>
+</div>
+<!-- RACETRACK BETTING OVAL (FRENCH BETS) -->
+<div class="w-full xl:w-[20%] flex flex-col items-center justify-center p-2 rounded-xl bg-black/25 text-[#e2c974] border border-[#e2c974]/30 shadow-inner">
+<div class="font-label-sm text-[10px] uppercase font-bold tracking-wider text-center pb-1 text-white/80">French Racetrack</div>
+<!-- Stylized Racetrack Capsule -->
+<div class="w-full h-28 rounded-full border-2 border-[#e2c974] flex flex-col justify-between p-1 relative overflow-hidden bg-[#073021]/80 shadow-md">
+<!-- Voisins sector -->
+<div class="w-full py-1 text-center font-label-sm text-[10px] font-bold text-white hover:bg-white/10 cursor-pointer rounded-t-full transition-colors">
+                  VOISINS DU ZÉRO
+                </div>
+<div class="flex items-center justify-between px-2 font-mono text-[9px] text-white/90">
+<span class="bg-[#ba1a1a]/80 px-1 rounded cursor-pointer hover:scale-105 transition-transform">Orphelins</span>
+<span class="text-white font-bold text-[11px] bg-primary/60 px-1.5 py-0.5 rounded-full">0 Spiel</span>
+<span class="bg-[#ba1a1a]/80 px-1 rounded cursor-pointer hover:scale-105 transition-transform">Orphelins</span>
+</div>
+<!-- Tiers sector -->
+<div class="w-full py-1 text-center font-label-sm text-[10px] font-bold text-[#e2c974] hover:bg-white/10 cursor-pointer rounded-b-full transition-colors">
+                  TIERS DU CYLINDRE
+                </div>
+</div>
+<span class="text-[9px] font-mono text-white/60 pt-1">Call bets &amp; Series</span>
+</div>
+</div>
+<!-- BOTTOM ACTION BAR INTEGRATED INTO TABLE APRON -->
+<div class="relative z-10 w-full pt-space-xs border-t border-[#e2c974]/30 flex flex-wrap items-center justify-between gap-space-sm text-white">
+<!-- Left: Virtual Balance & Active Bet -->
+<div class="flex items-center gap-space-md">
+<div class="flex flex-col">
+<span class="font-label-sm text-[10px] text-[#e2c974] uppercase font-bold tracking-wider">Virtual Balance</span>
+<div class="flex items-baseline gap-1">
+<span class="font-code-metric text-code-metric font-bold text-white tracking-tight">V$ 10,450.00</span>
+<span class="font-label-sm text-[11px] text-[#85f8c4] font-semibold">(+450.00 Net)</span>
+</div>
+</div>
+<div class="h-8 w-[1px] bg-white/20 hidden sm:block"></div>
+<div class="flex flex-col">
+<span class="font-label-sm text-[10px] text-white/60 uppercase font-bold tracking-wider">Current Round Bet</span>
+<span class="font-code-metric text-[18px] text-[#e2c974] font-bold">V$ 50.00</span>
+</div>
+</div>
+<!-- Center: Chip Denominations (AI Controlled Read-Only Display) -->
+<div class="hidden lg:flex items-center gap-1.5 bg-black/40 px-space-sm py-1 rounded-full border border-white/10">
+<span class="font-label-sm text-[10px] uppercase font-bold text-white/60 mr-1 flex items-center gap-1">
+<span class="material-symbols-outlined text-[13px] text-amber-400">lock</span> AI Stakes:
+              </span>
+<div class="w-6 h-6 rounded-full bg-slate-300 text-slate-800 text-[9px] font-bold flex items-center justify-center shadow">.10</div>
+<div class="w-6 h-6 rounded-full bg-orange-400 text-white text-[9px] font-bold flex items-center justify-center shadow">.50</div>
+<div class="w-6 h-6 rounded-full bg-white text-slate-900 text-[9px] font-bold flex items-center justify-center shadow">1</div>
+<div class="w-6 h-6 rounded-full bg-red-600 text-white text-[9px] font-bold flex items-center justify-center shadow ring-1 ring-[#e2c974]">5</div>
+<div class="w-6 h-6 rounded-full bg-emerald-600 text-white text-[9px] font-bold flex items-center justify-center shadow ring-1 ring-[#e2c974]">25</div>
+<div class="w-6 h-6 rounded-full bg-slate-900 text-yellow-400 text-[9px] font-bold flex items-center justify-center shadow ring-1 ring-yellow-400">100</div>
+</div>
+<!-- Right: Playback Automation Controls -->
+<div class="flex items-center gap-space-xs">
+<!-- Auto Run (Primary) -->
+<button class="px-space-sm py-1.5 rounded-lg bg-primary hover:bg-primary-container text-white font-label-sm text-label-sm font-bold flex items-center gap-1 shadow-md transition-all active:scale-95" type="button">
+<span class="material-symbols-outlined text-[16px]">play_arrow</span>
+<span>Auto Run</span>
+</button>
+<!-- Pause Button -->
+<button class="px-space-xs py-1.5 rounded-lg bg-surface-container-lowest/20 hover:bg-surface-container-lowest/30 text-white font-label-sm text-label-sm flex items-center gap-1 transition-all" type="button">
+<span class="material-symbols-outlined text-[16px]">pause</span>
+<span>Pause</span>
+</button>
+<!-- Stop Simulation (Rose Red) -->
+<button class="px-space-xs py-1.5 rounded-lg bg-error hover:bg-[#93000a] text-white font-label-sm text-label-sm flex items-center gap-1 shadow-sm transition-all" type="button">
+<span class="material-symbols-outlined text-[16px]">stop</span>
+<span>Stop</span>
+</button>
+<!-- Step Next -->
+<button class="p-1.5 rounded-lg bg-surface-container-lowest/20 hover:bg-surface-container-lowest/30 text-white transition-all" title="Step Next Round" type="button">
+<span class="material-symbols-outlined text-[16px]">skip_next</span>
+</button>
+<!-- Speed Selector Pill -->
+<div class="flex items-center bg-black/40 rounded-lg p-0.5 ml-1 text-[11px] font-mono">
+<button class="px-1.5 py-0.5 rounded text-white/60 hover:text-white" type="button">1x</button>
+<button class="px-1.5 py-0.5 rounded bg-primary text-white font-bold" type="button">2x</button>
+<button class="px-1.5 py-0.5 rounded text-white/60 hover:text-white" type="button">Max</button>
+</div>
+</div>
+</div>
+</div>
+</section>
+</div>
+<!-- COLLAPSIBLE BOTTOM DRAWER (COMPACT DOCKED TAB BAR) -->
+<footer class="w-full bg-surface-container-lowest rounded-xl shadow-sm p-space-xs flex items-center justify-between select-none">
+<div class="flex items-center gap-space-xs overflow-x-auto">
+<button class="flex items-center gap-1 px-space-sm py-1 rounded-lg bg-surface-container text-on-surface font-label-sm text-label-sm font-semibold shadow-xs" type="button">
+<span class="material-symbols-outlined text-[16px] text-primary">terminal</span>
+<span>Logs &amp; Rationale</span>
+</button>
+<button class="flex items-center gap-1 px-space-sm py-1 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-label-sm text-label-sm font-medium transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">show_chart</span>
+<span>Balance Chart</span>
+</button>
+<button class="flex items-center gap-1 px-space-sm py-1 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-label-sm text-label-sm font-medium transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">receipt_long</span>
+<span>Round Ledger (38)</span>
+</button>
+<button class="flex items-center gap-1 px-space-sm py-1 rounded-lg text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface font-label-sm text-label-sm font-medium transition-colors" type="button">
+<span class="material-symbols-outlined text-[16px]">data_object</span>
+<span>Raw JSON</span>
+</button>
+</div>
+<div class="flex items-center gap-space-md">
+<span class="font-label-sm text-[11px] text-on-surface-variant font-mono hidden md:inline-block">System Load: 14% · Redis Buffer 0 msgs</span>
+<button class="flex items-center gap-1 px-space-sm py-1 rounded-lg bg-surface-container-low hover:bg-surface-container text-on-surface font-label-sm text-label-sm font-semibold transition-all" type="button">
+<span>Expand History</span>
+<span class="material-symbols-outlined text-[16px]">expand_less</span>
+</button>
+</div>
+</footer>
+</div>
+<!-- CLIENT-SIDE INTERACTIVITY & MICRO-BEHAVIORS -->
+<script>
+    function switchProvider(provider) {
+      const tabs = ['cloud', 'cli', 'ollama'];
+      tabs.forEach(t => {
+        const el = document.getElementById('tab-' + t);
+        if (t === provider) {
+          el.className = 'py-1 px-space-xs text-center rounded-md font-label-sm text-label-sm font-semibold bg-surface-container-lowest shadow-sm text-primary transition-all';
+        } else {
+          el.className = 'py-1 px-space-xs text-center rounded-md font-label-sm text-label-sm font-medium text-on-surface-variant hover:text-on-surface transition-all';
+        }
+      });
+      const note = document.getElementById('ollama-notice');
+      if (provider === 'ollama') {
+        note.classList.remove('bg-surface-container-high/40');
+        note.classList.add('bg-tertiary-fixed', 'text-on-tertiary-fixed-variant');
+      } else {
+        note.classList.remove('bg-tertiary-fixed', 'text-on-tertiary-fixed-variant');
+        note.classList.add('bg-surface-container-high/40');
+      }
+    }
+
+    // Dynamic lightweight telemetry tick
+    setInterval(() => {
+      const fps = document.getElementById('fps-counter');
+      if (fps) {
+        const val = (59.4 + Math.random() * 0.7).toFixed(1);
+        fps.textContent = val + ' FPS';
+      }
+    }, 2000);
+  </script>
+</div></main></div></body></html>

@@ -1,0 +1,45 @@
+# dependencies & build output
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# local data — sessions, ledgers, usage (personal data, never commit)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# secrets & local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+client_secret*.json
+
+# logs & scratch
+*.log
+logs/
+tmp/
+.cache/
+.vite/
+
+# optional Laya / Python environment and model weights
+.venv*/
+__pycache__/
+*.safetensors
+*.onnx
+*.bin
+*.gguf
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

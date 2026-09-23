@@ -1,0 +1,124 @@
+/*
+ * Luck design tokens — compiled locally by Tailwind CSS v4 (no CDN).
+ * Extracted from design-references/stitch_ai_roulette_lab (code.html tailwind.config + DESIGN.md):
+ * ivory surrounding interface, emerald felt, walnut wheel, champagne details.
+ * Components must use these theme classes (bg-felt, text-champagne, …) — never raw hex codes.
+ */
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  /* Typography (DESIGN.md: Inter for prose, JetBrains Mono for numeric telemetry) */
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Ivory surrounding interface */
+  --color-ivory: #fbf9f5;
+  --color-ivory-deep: #f6f4ee;
+  --color-card: #ffffff;
+  --color-card-muted: #faf8f5;
+  --color-hairline: #e2e8f0;
+  --color-hairline-strong: #cbd5e1;
+
+  /* Ink (slate) */
+  --color-ink: #1e293b;
+  --color-ink-soft: #475569;
+  --color-ink-muted: #64748b;
+
+  /* Algorithmic accents */
+  --color-primary: #0d9488;
+  --color-primary-strong: #0f766e;
+  --color-primary-soft: #ccfbf1;
+  --color-secondary: #4f46e5;
+  --color-secondary-strong: #4338ca;
+  --color-secondary-soft: #e0e7ff;
+  --color-warning: #d97706;
+  --color-warning-soft: #fef3c7;
+  --color-danger: #ba1a1a;
+  --color-danger-strong: #93000a;
+  --color-danger-soft: #ffdad6;
+  --color-success: #059669;
+  --color-success-soft: #d1fae5;
+
+  /* Emerald felt */
+  --color-felt: #0c432f;
+  --color-felt-light: #155e42;
+  --color-felt-dark: #072a1e;
+  --color-felt-cell: #0b3e2b;
+  --color-felt-line: #e2c974;
+
+  /* Champagne details */
+  --color-champagne: #e2c974;
+  --color-champagne-light: #fae8a4;
+  --color-champagne-pale: #fff2b2;
+  --color-champagne-deep: #997b2c;
+  --color-mint: #85f8c4;
+
+  /* Walnut wheel */
+  --color-walnut: #5c3a21;
+  --color-walnut-mid: #3e2210;
+  --color-walnut-dark: #241207;
+  --color-walnut-deep: #1a140f;
+  --color-rotor: #2d1c12;
+  --color-rotor-dark: #1e140d;
+  --color-steel: #8e98a0;
+
+  /* Roulette pockets */
+  --color-pocket-red: #ba1a1a;
+  --color-pocket-black: #111c2d;
+  --color-pocket-green: #006948;
+
+  /* Elevation (DESIGN.md levels 1–3) */
+  --shadow-card: 0 1px 3px rgba(30, 41, 59, 0.04), 0 6px 16px -4px rgba(30, 41, 59, 0.03);
+  --shadow-raised: 0 4px 6px -1px rgba(30, 41, 59, 0.06), 0 10px 20px -3px rgba(30, 41, 59, 0.05);
+  --shadow-overlay: 0 12px 28px -4px rgba(30, 41, 59, 0.08), 0 8px 10px -6px rgba(30, 41, 59, 0.04);
+  --shadow-inset-soft: inset 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-felt: 0 20px 45px rgba(0, 0, 0, 0.35);
+
+  --radius-card: 1rem;
+}
+
+@layer base {
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+  }
+  body {
+    @apply bg-ivory text-ink font-sans antialiased;
+    font-feature-settings: 'cv11', 'ss01';
+  }
+  /* Tabular figures for every number that updates live (DESIGN.md) */
+  .tnum,
+  .font-mono {
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 2px;
+  }
+}
+
+/* Felt background used by the table apron (gradient from the Stitch export). */
+.felt-surface {
+  background: radial-gradient(
+    circle at 50% 30%,
+    var(--color-felt-light) 0%,
+    var(--color-felt) 55%,
+    var(--color-felt-dark) 100%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
