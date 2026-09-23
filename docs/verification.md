@@ -9,10 +9,10 @@ the final run of the last round.
 | Check | Result |
 |---|---|
 | `npx tsc -p tsconfig.json --noEmit` and `tsc -p tsconfig.server.json --noEmit` | 0 errors |
-| `npx vitest run` | 54 test files, 1 184 tests passed, 0 failed |
+| `npx vitest run` | 59 test files, 1 275 tests passed, 0 failed |
 | `npm run build` | web bundle + compiled server built; CSS compiled locally, fonts bundled |
 | `node scripts/validate-components.mjs` | 51 components pass (Props interface, no hex in className) |
-| `node scripts/secret-scan.mjs` | clean — 223 files scanned (git mode; the walk mode used for a ZIP download lists the same files) |
+| `node scripts/secret-scan.mjs` | clean — 228 files scanned (git mode; the walk mode used for a ZIP download lists the same files) |
 
 Key suites: `src/shared/bets.test.ts` (157 bet positions × 37 outcomes against a hand-typed oracle), `src/server/db/*.test.ts`
 (transactions, exactly-once settlement, crash at 4 commit boundaries), `src/web/components/wheel/*` (all 37 landings,
@@ -96,21 +96,23 @@ conversation / resting-wheel changes verified **closed** with live probes; no cr
 
 ## Clean checkout
 
-Fresh `git clone https://github.com/leelaravind/Luck` → `npm ci` → `npm run typecheck` → `npm test` → `npm run build`
-— all succeeded before this fix round, and the built single-port server served the UI.
-<!--COUNTS--> TODO(lead): re-run the clean checkout after this fix round and record its test files / tests here.
+Fresh `git clone https://github.com/leelaravind/Luck` of the last code commit (`1f9ef76`, 2026-09-23) → `npm ci`
+(214 packages) → `npm run typecheck` (0 errors) → `npm test` (59 test files, 1 275 tests passed, 0 failed) →
+`npm run build` → `npm run secret-scan` (clean, 228 files) → `npm run validate:components` (51 files) — all
+succeeded. CI for the same commit: 17 of 17 jobs green (Windows, macOS and Linux × Node 22.22.2, 22.x, 24.15.0,
+24.x, 26.x; the production dependency audit; the full-history gitleaks scan). An earlier clean checkout also
+started the built single-port server and loaded the UI.
 
 **ZIP download (no git).** Before the first fix round a ZIP download failed 1 test and `npm run secret-scan`,
 because the scanner needed git. The scanner now falls back to walking the folder (honouring `.gitignore`) with a
 notice. Checked by the tests (a folder outside any git repository and a run without git on `PATH`) and on a copy of
 the publishable files outside git: notice printed, the same number of files scanned as in git mode, clean — also
 after adding a `.env` with a key-shaped value, `data/luck.db`, `tmp/` and `node_modules/`, which `.gitignore` excludes.
-The final audit's closure check then ran the ZIP equivalent on the first fix round's commit: `git archive` (the
-tool GitHub uses to build its ZIP downloads, so the same file set) unpacked outside any git repository →
-`npm ci` → `npm test`: 1 181 tests passed and the 3 tests that need git were skipped; the secret scan used walk
-mode with a notice and scanned 223 files, clean. One of its runs failed in `tests/security/vite-dev.test.ts`
-(a request timeout while the machine was loaded); the second fix round made that test warm the dev server up first
-(see below). Since then the scanner also walks a folder that sits inside another repository which ignores it or
+The ZIP equivalent of `1f9ef76` — `git archive` (the tool GitHub uses to build its ZIP downloads, so the same file
+set) unpacked outside any git repository → `npm ci` → `npm test`: 1 272 tests passed and the 3 tests that need git
+were skipped; the secret scan used walk mode with a notice and scanned the same 228 files, clean. (An earlier run of
+this check, on the first fix round's commit, failed once in `tests/security/vite-dev.test.ts` with a request
+timeout while the machine was loaded; see the second and third fix rounds below.) Since then the scanner also walks a folder that sits inside another repository which ignores it or
 tracks none of its files (a ZIP unpacked under another project's ignored `tmp/` previously scanned 0 files and
 reported "clean"), and a folder for which git lists no files.
 
