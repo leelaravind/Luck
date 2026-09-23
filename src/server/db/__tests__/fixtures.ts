@@ -146,6 +146,7 @@ export function decision(sessionId: string, id: string, overrides: Partial<Decis
     startedAt: T0,
     completedAt: null,
     latencyMs: null,
+    providerNote: null,
     ...overrides,
   };
 }

@@ -3,10 +3,11 @@
  * dialog, sidebar, forms) and derives what may be shown while a result is still hidden.
  * App.tsx stays a layout file.
  */
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { CreateSessionRequest, ProviderCapabilities } from '../../shared/contracts';
 import type { ApiClient } from '../api/client';
 import { isDecisionVisible, isLogVisible } from '../state/reveal';
+import { groupUsageByDecision, NO_USAGE } from '../state/usage';
 import { useLuck } from '../state/useLuck';
 import { useDrawer } from './useDrawer';
 import { useNewSessionForm } from './useNewSessionForm';
@@ -50,6 +51,18 @@ export function useDashboard(api?: ApiClient) {
     if (d && p && isDecisionVisible(d.roundNumber, p)) return d;
     return visible.decisions[0] ?? null;
   }, [state.snapshot?.lastDecision, p, visible.decisions]);
+
+  /** Usage records matched to their decision by decisionId (shown only next to a visible decision). */
+  const usageByDecision = useMemo(() => groupUsageByDecision(state.usageRecords), [state.usageRecords]);
+  const lastDecisionUsage = (lastDecision && usageByDecision.get(lastDecision.id)) || NO_USAGE;
+
+  // Session list freshness: re-read it whenever the Session history tab is shown.
+  const { refreshSessions } = actions;
+  const historyVisible = drawer.open && drawer.tab === 'history';
+  useEffect(() => {
+    if (historyVisible) void refreshSessions({ quiet: true });
+  }, [historyVisible, refreshSessions]);
+  const onSessionPickerOpen = useCallback(() => void refreshSessions({ quiet: true }), [refreshSessions]);
 
   const { createSession, saveSettings, testProvider, loadModels } = actions;
   const onCreate = useCallback(
@@ -98,6 +111,9 @@ export function useDashboard(api?: ApiClient) {
     sessionCapabilities,
     visible,
     lastDecision,
+    lastDecisionUsage,
+    usageByDecision,
+    onSessionPickerOpen,
     onTest,
     onLoadModels,
     suggestedPricingKey,

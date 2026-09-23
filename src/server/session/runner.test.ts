@@ -46,6 +46,46 @@ describe('runner edge cases (fixtures)', () => {
     expect(h.repo.listUsage(s.id).map((u) => u.status)).toEqual(['error']);
   });
 
+  it('#32: Stop during the wait between failed decisions ends the session without another request', async () => {
+    const adapter = fakeAdapter({ fallback: () => failure('rate_limited', true, { retryAfterMs: 20_000, httpStatus: 429 }) });
+    const waitStarted = deferred<number>();
+    // The wait only ends when aborted (Stop), like a real 20 s Retry-After.
+    const sleep = (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve) => {
+        if (ms === 0 || signal?.aborted) return resolve();
+        waitStarted.resolve(ms);
+        signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+    const h = harness({ adapters: [adapter], sleep });
+    const s = h.service.createSession({ player: { kind: 'ollama', model: 'm' }, limits: { maxRetries: 0, maxConsecutiveFailures: 5 } }, h.key()).session;
+    await h.service.control(s.id, 'start', h.key());
+    expect(await waitStarted.promise).toBe(20_000);
+    expect(h.repo.getSession(s.id)).toMatchObject({ status: 'running', phase: 'ready' }); // not "requesting a decision" while waiting
+
+    const snap = await h.service.control(s.id, 'stop', h.key());
+    expect(snap.session).toMatchObject({ status: 'stopped', endReason: 'user_stop' });
+    expect(adapter.calls).toHaveLength(1);
+    expect(h.repo.listDecisions(s.id).map((d) => d.status)).toEqual(['failed']);
+  });
+
+  it('#32: shutdown during the wait between failed decisions pauses (server_restart) without another request', async () => {
+    const adapter = fakeAdapter({ fallback: () => failure('unavailable', true) });
+    const waitStarted = deferred<void>();
+    const sleep = (ms: number, signal?: AbortSignal) =>
+      new Promise<void>((resolve) => {
+        if (ms === 0 || signal?.aborted) return resolve();
+        waitStarted.resolve();
+        signal?.addEventListener('abort', () => resolve(), { once: true });
+      });
+    const h = harness({ adapters: [adapter], sleep });
+    const s = h.service.createSession({ player: { kind: 'ollama', model: 'm' }, limits: { maxRetries: 0, maxConsecutiveFailures: 5 } }, h.key()).session;
+    await h.service.control(s.id, 'start', h.key());
+    await waitStarted.promise;
+    await h.service.shutdown();
+    expect(h.repo.getSession(s.id)).toMatchObject({ status: 'paused', pauseReason: 'server_restart' });
+    expect(adapter.calls).toHaveLength(1);
+  });
+
   it('shutdown during a request pauses the session (server_restart) and marks the decision interrupted', async () => {
     const adapter = fakeAdapter();
     const never = deferred<ProviderCallResult>();

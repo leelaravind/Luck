@@ -90,7 +90,7 @@ function makeClient(cfg: ResolvedProviderConfig, timeoutMs: number): Anthropic {
 }
 
 /** Map anything the SDK throws to a typed ProviderError (most specific class first). */
-export function mapAnthropicError(
+function mapAnthropicError(
   err: unknown,
   ctx: { deadline: 'timeout' | 'cancelled' | null; timeoutMs: number; apiKey?: string },
 ): ProviderError {

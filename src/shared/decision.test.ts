@@ -3,9 +3,11 @@ import { MAX_EXPLANATION_CHARS } from './contracts.js';
 import {
   DECISION_BET_TYPES,
   PLAYER_DECISION_JSON_SCHEMA,
+  decisionJsonSchema,
   extractSingleJsonObject,
   normalizeDecisionText,
   parseDecision,
+  stripReasoning,
 } from './decision.js';
 
 const text = (t: string) => parseDecision({ text: t });
@@ -50,6 +52,36 @@ describe('PLAYER_DECISION_JSON_SCHEMA', () => {
       }
     };
     walk(schema);
+  });
+});
+
+describe('decisionJsonSchema (per session)', () => {
+  /** Every "description" string anywhere in a schema. */
+  const descriptions = (node: unknown): string[] => {
+    if (!node || typeof node !== 'object') return [];
+    return Object.entries(node as Record<string, unknown>).flatMap(([k, v]) =>
+      k === 'description' && typeof v === 'string' ? [v] : descriptions(v),
+    );
+  };
+
+  it('without allowStop: no "stop" in the action enum or in ANY description (bets included)', () => {
+    const schema = decisionJsonSchema({ allowStop: false }) as any;
+    expect(schema.properties.action.enum).toEqual(['bet', 'skip']);
+    const texts = descriptions(schema);
+    expect(texts.length).toBeGreaterThanOrEqual(5);
+    for (const t of texts) expect(t).not.toMatch(/stop/i);
+    expect(schema.properties.bets.description).toBe('Required and non-empty when action is "bet"; omit (or leave empty) for "skip".');
+    // Everything else is the shared schema, unchanged.
+    expect(schema.properties.bets.items).toBe((PLAYER_DECISION_JSON_SCHEMA as any).properties.bets.items);
+    expect(schema.required).toEqual(['action']);
+    expect(schema.additionalProperties).toBe(false);
+  });
+
+  it('with allowStop: "stop" is offered in the enum and described', () => {
+    const schema = decisionJsonSchema({ allowStop: true }) as any;
+    expect(schema.properties.action.enum).toEqual(['bet', 'skip', 'stop']);
+    expect(schema.properties.action.description).toMatch(/"stop" to end the session/);
+    expect(schema.properties.bets.description).toMatch(/"stop"/);
   });
 });
 
@@ -196,6 +228,15 @@ describe('parseDecision — rejected output', () => {
 describe('text helpers', () => {
   it('normalizeDecisionText strips multiple think blocks and fences', () => {
     expect(normalizeDecisionText('<THINK>a</THINK> <thinking>b</thinking>```json\n{"x":1}\n```').text).toBe('{"x":1}');
+  });
+
+  it('stripReasoning removes think blocks, orphan closing tags and unterminated blocks, keeping everything else', () => {
+    expect(stripReasoning('<think>secret plan</think>{"action":"skip"}')).toEqual({ text: '{"action":"skip"}', removed: true, unterminatedThink: false });
+    expect(stripReasoning('plan...</think>\n{"action":"skip"}').text).toBe('\n{"action":"skip"}');
+    expect(stripReasoning('{"action":"skip"} <thinking>more')).toEqual({ text: '{"action":"skip"} ', removed: true, unterminatedThink: true });
+    // No reasoning: returned unchanged (fences and whitespace are kept for inspection).
+    const plain = '```json\n{"action":"skip"}\n```';
+    expect(stripReasoning(plain)).toEqual({ text: plain, removed: false, unterminatedThink: false });
   });
 
   it('extractSingleJsonObject reports empty output after stripping', () => {

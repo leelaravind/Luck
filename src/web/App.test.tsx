@@ -8,6 +8,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type {
   AppSettings,
+  DecisionRecord,
   ProviderStatus,
   RoundRecord,
   ServerEvent,
@@ -19,7 +20,15 @@ import { DEFAULT_LIMITS } from '../shared/contracts';
 import type { RouletteWheelProps } from './contracts';
 import { createApiClient } from './api/client';
 import { App } from './App';
-import { fixtureRound, fixtureSession, fixtureSnapshot, fixtureUsage, FIXTURE_SESSION_ID } from './state/testFixtures';
+import {
+  fixtureDecision,
+  fixtureRound,
+  fixtureSession,
+  fixtureSnapshot,
+  fixtureUsage,
+  fixtureUsageRecord,
+  FIXTURE_SESSION_ID,
+} from './state/testFixtures';
 
 // Wheel test double: shows the spin it was given and settles only when the test clicks.
 vi.mock('./components/wheel/RouletteWheel', () => ({
@@ -70,9 +79,14 @@ interface World {
   snapshot: SessionSnapshot;
   rounds: RoundRecord[];
   usage: UsageRecord[];
+  decisions?: DecisionRecord[];
   /** Response for POST /rounds (default 404). */
   roundResponse?: { status: number; body: unknown };
   posts?: string[];
+  /** Bodies of PUT /api/settings (the fixture merges them into `settings`). */
+  settingsPuts?: unknown[];
+  /** Number of GET /api/sessions requests. */
+  sessionListGets?: number;
 }
 
 function makeFetch(world: World) {
@@ -88,12 +102,26 @@ function makeFetch(world: World) {
     }
     if (url === '/api/health') return json({ ok: true, version: 'test' });
     if (url === '/api/providers') return json({ providers: world.providers });
+    if (url === '/api/settings' && method === 'PUT') {
+      const body = JSON.parse(String(init?.body)) as Partial<AppSettings>;
+      world.settingsPuts?.push(body);
+      const defaults = Object.entries(world.settings.pricing).filter(([, p]) => p.source === 'default-assumption');
+      world.settings = {
+        ...world.settings,
+        ...body,
+        pricing: body.pricing ? { ...Object.fromEntries(defaults), ...body.pricing } : world.settings.pricing,
+      };
+      return json(world.settings);
+    }
     if (url === '/api/settings') return json(world.settings);
-    if (url === '/api/sessions' && method === 'GET') return json({ sessions: world.sessions });
+    if (url === '/api/sessions' && method === 'GET') {
+      world.sessionListGets = (world.sessionListGets ?? 0) + 1;
+      return json({ sessions: world.sessions });
+    }
     const id = FIXTURE_SESSION_ID;
     if (url === `/api/sessions/${id}`) return json(world.snapshot);
     if (url.startsWith(`/api/sessions/${id}/rounds`)) return json({ rounds: world.rounds });
-    if (url.startsWith(`/api/sessions/${id}/decisions`)) return json({ decisions: [] });
+    if (url.startsWith(`/api/sessions/${id}/decisions`)) return json({ decisions: world.decisions ?? [] });
     if (url.startsWith(`/api/sessions/${id}/logs`)) return json({ logs: [] });
     if (url.startsWith(`/api/sessions/${id}/usage`)) return json({ records: world.usage, summary: world.snapshot.usage });
     return json({ error: { code: 'not_found', message: `No fixture for ${method} ${url}` } }, 404);
@@ -103,6 +131,7 @@ function makeFetch(world: World) {
 const SETTINGS: AppSettings = {
   defaultLimits: DEFAULT_LIMITS,
   animationSpeed: 'normal',
+  roundPacingMs: 7000,
   reduceMotion: 'off',
   pricing: {},
   players: {},
@@ -351,15 +380,20 @@ describe('App (fixture server)', () => {
     const cell = await within(table).findByRole('button', { name: /^Straight 17\b/ });
     fireEvent.click(cell);
     const spin = await screen.findByRole('button', { name: /^Spin/ });
-    await waitFor(() => expect((spin as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect(spin.getAttribute('aria-disabled')).toBeNull());
+    spin.focus();
     act(() => {
       fireEvent.click(spin);
       fireEvent.click(spin);
     });
+    // While the request is in flight Spin is unavailable via aria-disabled only, so it keeps focus (#25).
+    expect(spin.getAttribute('aria-disabled')).toBe('true');
+    expect((spin as HTMLButtonElement).disabled).toBe(false);
     const alert = await within(screen.getByRole('main')).findByRole('alert');
     expect(alert.textContent).toContain('The server rejected these bets: Stake above the per-bet maximum');
     expect(alert.textContent).toContain('straight:17 exceeds V$ 100.00');
     expect(world.posts!.filter((p) => p.endsWith('/rounds'))).toHaveLength(1);
+    expect(document.activeElement).toBe(spin);
   });
 
   it('shows an empty state (no invented data) when there are no sessions', async () => {
@@ -406,5 +440,234 @@ describe('App (fixture server)', () => {
     expect(screen.getByRole('tab', { name: /Balance chart/ }).getAttribute('aria-selected')).toBe('true');
     fireEvent.keyDown(screen.getByRole('tab', { name: /Balance chart/ }), { key: 'End' });
     expect(screen.getByRole('tab', { name: /Settings/ }).getAttribute('aria-selected')).toBe('true');
+  });
+});
+
+describe('App audit fixes (fixture server)', () => {
+  it('instant speed: the result stays hidden until the wheel reports the ball placed (#24)', async () => {
+    const r1 = fixtureRound(1, { balanceBefore: 1_000_00 });
+    const session = fixtureSession({ balance: r1.balanceAfter!, roundsPlayed: 1 });
+    const world: World = {
+      providers: [],
+      settings: { ...SETTINGS, animationSpeed: 'instant' },
+      sessions: [session],
+      snapshot: fixtureSnapshot(session, [r1]),
+      rounds: [r1],
+      usage: [],
+    };
+    render(<App api={createApiClient({ fetch: makeFetch(world) })} />);
+    const lastRound = await screen.findByRole('region', { name: 'Last round' });
+    await waitFor(() => expect(FakeEventSource.instances.length).toBeGreaterThan(0));
+    const es = lastSource();
+    act(() => es.open());
+
+    const r2 = fixtureRound(2, { balanceBefore: r1.balanceAfter!, winningNumber: 17, betNumber: 17 });
+    act(() => es.emit({ type: 'round', round: r2 }));
+    // The wheel receives the spin, but nothing is revealed before it reports the ball in the pocket.
+    expect(screen.getByTestId('wheel').getAttribute('data-spin')).toBe('round-2');
+    expect(within(lastRound).queryByText('Round #2')).toBeNull();
+    expect(screen.getByTestId('live-region').textContent).toBe('');
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'settle wheel' }));
+    });
+    expect(within(lastRound).getByText('Round #2')).toBeTruthy();
+    expect(screen.getByTestId('live-region').textContent).toContain('Round 2: 17 black');
+  });
+
+  it('shows per-attempt usage and the provider note for decisions (#5, #29)', async () => {
+    const r1 = fixtureRound(1, { balanceBefore: 1_000_00 });
+    const session = fixtureSession({
+      mode: 'ai',
+      player: { kind: 'openai', model: 'fixture-model' },
+      balance: r1.balanceAfter!,
+      roundsPlayed: 1,
+    });
+    const decision = fixtureDecision({ attempts: 2, latencyMs: 2_000, providerNote: 'conversation c-1 · turn 2 (resumed)' });
+    const usage = [
+      fixtureUsageRecord({
+        id: 'u-1',
+        attempt: 1,
+        status: 'timeout',
+        known: false,
+        inputTokens: null,
+        outputTokens: null,
+        cacheReadTokens: null,
+        costMicros: null,
+        costBasis: 'unknown',
+        latencyMs: null,
+        createdAt: '2026-09-23T10:00:02.500Z',
+      }),
+      fixtureUsageRecord({ id: 'u-2', attempt: 2, inputTokens: 1_200, outputTokens: 80, cacheReadTokens: 1_000, costMicros: 1_234, latencyMs: 1_500 }),
+      // Another decision's record must not be attributed to this one.
+      fixtureUsageRecord({ id: 'u-x', decisionId: 'other-decision', inputTokens: 999_999 }),
+    ];
+    const world: World = {
+      providers: [OPENAI],
+      settings: SETTINGS,
+      sessions: [session],
+      snapshot: fixtureSnapshot(session, [r1], {
+        lastDecision: decision,
+        usage: fixtureUsage({ requests: 3, costBasis: 'estimated-from-pricing' }),
+      }),
+      rounds: [r1],
+      usage,
+      decisions: [decision],
+    };
+    render(<App api={createApiClient({ fetch: makeFetch(world) })} />);
+
+    const heading = await screen.findByRole('heading', { name: 'Latest decision' });
+    const card = heading.closest('section')!;
+    await waitFor(() => expect(within(card).getByText('Attempt 2')).toBeTruthy());
+    const attempts = within(card)
+      .getAllByRole('listitem')
+      .filter((li) => /^Attempt \d/.test(li.textContent ?? ''));
+    expect(attempts).toHaveLength(2);
+    const [a1, a2] = attempts as [HTMLElement, HTMLElement];
+    // Attempt 1: nothing reported → "Not reported" for tokens, cost and latency; status from USAGE_STATUS_LABEL.
+    expect(within(a1).getByText('Timeout')).toBeTruthy();
+    expect(within(a1).getAllByText('Not reported')).toHaveLength(5);
+    // Attempt 2: the reported figures, the cost with its basis, and the attempt latency.
+    expect(within(a2).getByText('OK')).toBeTruthy();
+    expect(within(a2).getByText('1,200')).toBeTruthy();
+    expect(within(a2).getByText('80')).toBeTruthy();
+    expect(within(a2).getByText('1,000')).toBeTruthy();
+    expect(within(a2).getByText('$0.0012')).toBeTruthy();
+    expect(within(a2).getByText('(estimate from pricing assumption)')).toBeTruthy();
+    expect(within(a2).getByText('1.50 s')).toBeTruthy();
+    expect(within(card).queryByText('999,999')).toBeNull();
+    // Provider note, labelled as coming from the adapter.
+    expect(within(card).getByText('Provider note (adapter, not the model)')).toBeTruthy();
+    expect(within(card).getByText('conversation c-1 · turn 2 (resumed)')).toBeTruthy();
+
+    // The decisions log shows the same, per decision.
+    fireEvent.click(screen.getByRole('tab', { name: /Logs & decisions/ }));
+    const log = screen.getByRole('heading', { name: 'Decisions' }).closest('section')!;
+    await waitFor(() => expect(within(log).getByText('Attempt 2')).toBeTruthy());
+    expect(within(log).getByText('1,200')).toBeTruthy();
+    expect(within(log).getByText('$0.0012')).toBeTruthy();
+    expect(within(log).getByText('Timeout')).toBeTruthy();
+    expect(within(log).getByText('Provider note (adapter, not the model):')).toBeTruthy();
+    expect(within(log).getByText('conversation c-1 · turn 2 (resumed)')).toBeTruthy();
+    expect(within(log).queryByText('999,999')).toBeNull();
+  });
+
+  it('refreshes the session list on window focus, picker focus, the history tab and a status change (#26)', async () => {
+    const session = fixtureSession({ mode: 'demo', player: { kind: 'demo' } });
+    const world: World = {
+      providers: [],
+      settings: SETTINGS,
+      sessions: [session],
+      snapshot: fixtureSnapshot(session, []),
+      rounds: [],
+      usage: [],
+    };
+    render(<App api={createApiClient({ fetch: makeFetch(world) })} />);
+    const nav = await screen.findByRole('navigation', { name: 'Sessions' });
+    const picker = within(nav).getByRole('combobox', { name: 'Session' });
+    await waitFor(() => expect(FakeEventSource.instances.length).toBeGreaterThan(0));
+    const made = (id: string, name: string) =>
+      fixtureSession({ id, name, createdAt: '2026-09-23T11:00:00.000Z', updatedAt: '2026-09-23T11:00:00.000Z' });
+    const hasOption = (name: string) =>
+      within(picker)
+        .queryAllByRole('option')
+        .some((o) => o.textContent?.startsWith(name));
+
+    // 1. Window regains focus.
+    world.sessions = [...world.sessions, made('s-focus', 'Made in another tab')];
+    expect(hasOption('Made in another tab')).toBe(false);
+    act(() => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => expect(hasOption('Made in another tab')).toBe(true));
+
+    // 2. The header picker is focused (about to open).
+    world.sessions = [...world.sessions, made('s-picker', 'Made via the API')];
+    act(() => {
+      fireEvent.focus(picker);
+    });
+    await waitFor(() => expect(hasOption('Made via the API')).toBe(true));
+
+    // 3. The Session history tab is opened.
+    world.sessions = [...world.sessions, made('s-history', 'Made for history')];
+    fireEvent.click(screen.getByRole('tab', { name: /Session history/ }));
+    await waitFor(() => expect(screen.getByRole('tabpanel').textContent).toContain('Made for history'));
+
+    // 4. The open session's status changes (here: pushed over the event stream).
+    const es = lastSource();
+    act(() => es.open());
+    world.sessions = [...world.sessions, made('s-status', 'Made while running')];
+    const before = world.sessionListGets ?? 0;
+    act(() =>
+      es.emit({
+        type: 'snapshot',
+        snapshot: fixtureSnapshot({ ...session, status: 'running', updatedAt: '2026-09-23T10:05:00.000Z' }, []),
+      }),
+    );
+    await waitFor(() => expect(hasOption('Made while running')).toBe(true));
+    expect(world.sessionListGets).toBeGreaterThan(before);
+    // The open session keeps its live status from the stream.
+    expect(within(picker).getByRole('option', { name: /Fixture session · Running/ })).toBeTruthy();
+  });
+
+  it('settings: pause between rounds is saved as roundPacingMs, hints are accurate, pricing removals are sent (#4, #36)', async () => {
+    const world: World = {
+      providers: [],
+      settings: {
+        ...SETTINGS,
+        pricing: {
+          'openai:default-model': { inputPerMTokUsd: 1, outputPerMTokUsd: 2, source: 'default-assumption', asOf: '2026-01-01' },
+          'anthropic:my-model': { inputPerMTokUsd: 3, outputPerMTokUsd: 15, source: 'user', asOf: '2026-09-01' },
+        },
+      },
+      sessions: [],
+      snapshot: fixtureSnapshot(fixtureSession(), []),
+      rounds: [],
+      usage: [],
+      settingsPuts: [],
+    };
+    render(<App api={createApiClient({ fetch: makeFetch(world) })} />);
+    await screen.findByText('No sessions yet. Create one with “New session”.');
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings' }));
+    const pacing = (await screen.findByLabelText('Pause between autonomous rounds (seconds)')) as HTMLInputElement;
+    expect(pacing.value).toBe('7');
+    const text = document.body.textContent ?? '';
+    expect(text).toContain('This sets how often models are called');
+    expect(text).toContain(
+      'Changes only the wheel animation. How often models are asked is set by the pause between autonomous rounds below.',
+    );
+    expect(text).not.toContain('does not change how often');
+
+    // Default assumptions cannot be removed; user entries can.
+    const removeButtons = screen.getAllByRole('button', { name: /^Remove/ });
+    expect(removeButtons).toHaveLength(1);
+    expect(removeButtons[0]!.textContent).toBe('Remove anthropic:my-model');
+    fireEvent.click(removeButtons[0]!);
+
+    // Invalid pause: error shown, save blocked.
+    fireEvent.change(pacing, { target: { value: 'soon' } });
+    expect(screen.getByText(/Enter seconds from 0 to 600/)).toBeTruthy();
+    expect((screen.getByRole('button', { name: 'Save settings' }) as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(pacing, { target: { value: '2.5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(world.settingsPuts).toHaveLength(1));
+    const put = world.settingsPuts![0] as Partial<AppSettings>;
+    expect(put.roundPacingMs).toBe(2500);
+    // Exactly the rows listed (the server treats the map as the complete set): the removed entry is gone.
+    expect(put.pricing).toEqual({
+      'openai:default-model': { inputPerMTokUsd: 1, outputPerMTokUsd: 2, source: 'default-assumption', asOf: '2026-01-01' },
+    });
+    expect(put.pricing).not.toHaveProperty(['anthropic:my-model']);
+    // After the save the removed row does not come back; the default assumption is still listed.
+    await waitFor(() =>
+      expect((screen.getByLabelText('Pause between autonomous rounds (seconds)') as HTMLInputElement).value).toBe('2.5'),
+    );
+    expect(screen.queryByText('anthropic:my-model')).toBeNull();
+    expect(screen.getByText('openai:default-model')).toBeTruthy();
+
+    // An unchanged pause is not re-sent on the next save.
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    await waitFor(() => expect(world.settingsPuts).toHaveLength(2));
+    expect(world.settingsPuts![1]).not.toHaveProperty('roundPacingMs');
   });
 });

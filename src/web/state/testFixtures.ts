@@ -2,7 +2,7 @@
  * TEST FIXTURES ONLY — synthetic records for unit tests of the dashboard state. Never imported by app code.
  * Values follow the contracts (integer subunits, settled rounds carry settlement figures).
  */
-import type { RoundRecord, SessionInfo, SessionSnapshot, UsageSummary } from '../../shared/contracts';
+import type { DecisionRecord, RoundRecord, SessionInfo, SessionSnapshot, UsageRecord, UsageSummary } from '../../shared/contracts';
 import { DEFAULT_LIMITS } from '../../shared/contracts';
 
 export const FIXTURE_SESSION_ID = 'fixture-session';
@@ -107,6 +107,58 @@ export function fixtureSnapshot(session: SessionInfo, rounds: RoundRecord[], ove
     lastDecision: null,
     usage: fixtureUsage(),
     inFlight: { decision: false, round: false },
+    ...over,
+  };
+}
+
+export function fixtureDecision(over: Partial<DecisionRecord> = {}): DecisionRecord {
+  return {
+    id: 'decision-1',
+    sessionId: FIXTURE_SESSION_ID,
+    roundNumber: 1,
+    epoch: 1,
+    providerKind: 'openai',
+    model: 'fixture-model',
+    status: 'accepted',
+    action: 'bet',
+    bets: [{ type: 'red', stake: 10_00 }],
+    explanation: 'Fixture explanation.',
+    rawOutput: '{"action":"bet"}',
+    validationErrors: [],
+    errorCode: null,
+    errorMessage: null,
+    attempts: 1,
+    startedAt: '2026-09-23T10:00:02.000Z',
+    completedAt: '2026-09-23T10:00:03.000Z',
+    latencyMs: 1000,
+    providerNote: null,
+    ...over,
+  };
+}
+
+/** One attempt with fully reported usage (override fields to model missing numbers). */
+export function fixtureUsageRecord(over: Partial<UsageRecord> = {}): UsageRecord {
+  return {
+    id: 'usage-1',
+    sessionId: FIXTURE_SESSION_ID,
+    decisionId: 'decision-1',
+    attempt: 1,
+    providerKind: 'openai',
+    model: 'fixture-model',
+    status: 'ok',
+    latencyMs: 1000,
+    generationMs: null,
+    outputTokensPerSec: null,
+    costMicros: 1_000,
+    costBasis: 'estimated-from-pricing',
+    rateLimit: null,
+    createdAt: '2026-09-23T10:00:03.000Z',
+    inputTokens: 100,
+    outputTokens: 10,
+    cacheReadTokens: 0,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+    known: true,
     ...over,
   };
 }

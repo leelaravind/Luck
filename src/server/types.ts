@@ -115,6 +115,15 @@ export interface Repository {
   // sessions
   /** [TX] insert session with balance = limits.startingBalance + ledger 'session_start'. */
   createSession(input: NewSession): SessionInfo;
+  /**
+   * [TX] Create a session AND its idempotency record atomically (record = { sessionId, fingerprint }
+   * under (scope, key)). If (scope, key) already exists, nothing is written and the existing session
+   * is returned with created=false and the stored fingerprint, so the caller can reject a mismatch.
+   */
+  createSessionIdempotent(
+    input: NewSession,
+    idem: { scope: string; key: string; fingerprint: string },
+  ): { session: SessionInfo; created: boolean; fingerprint: string };
   getSession(id: string): SessionInfo | null;
   listSessions(): SessionInfo[];
   updateSession(id: string, patch: SessionPatch): SessionInfo;

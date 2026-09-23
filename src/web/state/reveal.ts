@@ -6,8 +6,9 @@
  * ball rests in the pocket (RouletteWheel.onSettled(roundId)). While a round is "hidden":
  *   - the balance shows the pre-spin value (balance before the round minus the stake on the table),
  *   - recent results / last round / ledger / chart do not show that round's outcome ("Spinning…").
- * If the tab is hidden, reduced motion is on, or the animation speed is "instant", the round is revealed
- * immediately (the wheel still receives the spin so it can show the ball resting in the pocket).
+ * If the tab is hidden or reduced motion is on, the round is revealed immediately (the wheel still receives
+ * the spin so it can show the ball resting in the pocket). At "instant" speed the wheel places the ball in
+ * the pocket at once and reports onSettled on the next tick, so the result appears right after the ball.
  *
  * Revealing is a watermark: rounds with seq <= revealedSeq may show their result. Rounds are strictly
  * sequential within a session, so a watermark can never reveal a later round before an earlier one.
@@ -72,7 +73,7 @@ export function revealFlush(state: RevealState): RevealState {
 
 /**
  * A round whose outcome is known arrived (event, snapshot, list or manual-round response).
- * `immediate` = reveal without waiting for the animation (hidden tab, reduced motion, instant speed).
+ * `immediate` = reveal without waiting for the wheel (hidden tab, reduced motion).
  */
 export function revealOutcome(state: RevealState, round: RoundRecord, immediate: boolean): RevealState {
   if (state.sessionId !== null && round.sessionId !== state.sessionId) return state;
@@ -150,10 +151,6 @@ export function isDecisionVisible(roundNumber: number, p: Pick<Presentation, 'hi
 /** Log lines written at/after a hidden round's outcome are held back until it is revealed. */
 export function isLogVisible(createdAt: string, p: Pick<Presentation, 'hiddenFrom'>): boolean {
   return !p.hiddenFrom || p.hiddenFrom.at === null || createdAt < p.hiddenFrom.at;
-}
-
-export function isRoundRevealed(round: RoundRecord, reveal: RevealState): boolean {
-  return round.winningNumber !== null && round.seq <= reveal.revealedSeq;
 }
 
 /**

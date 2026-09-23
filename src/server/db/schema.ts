@@ -305,8 +305,17 @@ CREATE TABLE idempotency (
 ) STRICT;
 `;
 
+// ───────────────────────────── migration 2: provider notes on decisions ─────────────────────────────
+// DecisionRecord.providerNote: a factual note from the provider adapter for the accepted attempt
+// (e.g. Claude Code CLI "conversation … turn 2 (resumed)", Laya top labels / routing).
+// Nullable: NULL = no note (every decision stored before this migration reads back as null).
+
+const V2 = /* sql */ `
+ALTER TABLE decisions ADD COLUMN provider_note TEXT;
+`;
+
 /** MIGRATIONS[i] upgrades user_version i → i + 1. Append only. */
-export const MIGRATIONS: readonly string[] = Object.freeze([V1]);
+export const MIGRATIONS: readonly string[] = Object.freeze([V1, V2]);
 
 /** The schema version this build writes. */
 export const SCHEMA_VERSION = MIGRATIONS.length;

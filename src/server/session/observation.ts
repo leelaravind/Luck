@@ -20,7 +20,7 @@ const NUMBER_BETS: ReadonlySet<BetType> = new Set(['straight', 'split', 'street'
 const INDEX_BETS: ReadonlySet<BetType> = new Set(['dozen', 'column']);
 
 /** How to express each bet type in a decision. Order = order shown to the model. */
-export const BET_TYPE_SELECTION: readonly { type: BetType; selection: string }[] = [
+const BET_TYPE_SELECTION: readonly { type: BetType; selection: string }[] = [
   { type: 'straight', selection: 'numbers: [n], one number 0-36' },
   { type: 'split', selection: 'numbers: two adjacent numbers on the layout, e.g. [17,20] or [0,2]' },
   { type: 'street', selection: 'numbers: [n,n+1,n+2] with n in 1,4,7,...,34' },
@@ -38,7 +38,7 @@ export const BET_TYPE_SELECTION: readonly { type: BetType; selection: string }[]
   { type: 'high', selection: 'no numbers or index (covers 19-36)' },
 ];
 
-export const OBSERVATION_RULES: readonly string[] = [
+const OBSERVATION_RULES: readonly string[] = [
   'European single-zero roulette: 37 pockets, numbers 0-36; 0 is green, all other numbers are red or black.',
   'Virtual credits only; no real money is involved.',
   'Amounts are integer subunits: 100 subunits = 1 credit.',
@@ -48,7 +48,7 @@ export const OBSERVATION_RULES: readonly string[] = [
   'Invalid decisions are rejected and never converted into a different bet.',
 ];
 
-export const OBSERVATION_UNITS = 'credit subunits (100 = 1 virtual credit)';
+const OBSERVATION_UNITS = 'credit subunits (100 = 1 virtual credit)';
 
 /**
  * @param session  current session state

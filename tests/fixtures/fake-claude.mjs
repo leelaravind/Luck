@@ -14,30 +14,61 @@
  *      tool_use, permission_denial, rate_limit_event_then_ok, auth_error, plan_limit, overloaded,
  *      max_budget, max_turns, malformed, no_init, hang, nonzero_exit, echo_env
  *  - FAKE_CLAUDE_RECORD_FILE (optional): writes { argv, stdin, cwd, envKeys, hasApiKey, hasAuthToken }.
+ *  - FAKE_CLAUDE_META_RECORD_FILE (optional): appends one JSON line { argv, cwd, envKeys, hasApiKey,
+ *    hasAuthToken } for every `--version` / `auth status` run (the connection test's children).
  *  - FAKE_CLAUDE_PID_FILE (optional): writes this process's pid (used to prove the child was killed).
+ *
+ * Conversations (like the real CLI 2.1.280, verified from its result schema and live transcripts):
+ *  - With FAKE_CLAUDE_STATE_DIR set and --session-id <id> / --resume <id>, the fake keeps the
+ *    conversation's RUNNING TOTALS in <dir>/<id>.json. total_cost_usd, duration_api_ms and modelUsage
+ *    in a result are the totals for the whole conversation so far (a resumed run continues from the
+ *    saved totals); result.usage and num_turns are for this run only.
+ *  - --session-id with an existing id, or --resume with an unknown id, fails like the real CLI.
+ *  - FAKE_CLAUDE_TURN_COSTS / FAKE_CLAUDE_TURN_API_MS: comma-separated per-turn increases (turn 1, 2, ...;
+ *    the last value repeats). Defaults 0.00123 USD and 987 ms.
+ *  - FAKE_CLAUDE_OMIT_TOTALS_ON_TURN=<n>: the result of conversation turn n carries no total_cost_usd /
+ *    duration_api_ms (the totals still advance), to exercise an unknown baseline.
+ *  - FAKE_CLAUDE_RESET_TOTALS_ON_TURN=<n>: the running totals restart from zero on conversation turn n
+ *    (a resumed transcript without saved totals).
  */
 import fs from 'node:fs';
+import path from 'node:path';
 
 const argv = process.argv.slice(2);
 const env = process.env;
 
 if (env.FAKE_CLAUDE_PID_FILE) fs.writeFileSync(env.FAKE_CLAUDE_PID_FILE, String(process.pid));
 
+function recordMeta() {
+  if (!env.FAKE_CLAUDE_META_RECORD_FILE) return;
+  const rec = {
+    argv,
+    cwd: process.cwd(),
+    envKeys: Object.keys(env).sort(),
+    hasApiKey: Boolean(env.ANTHROPIC_API_KEY),
+    hasAuthToken: Boolean(env.ANTHROPIC_AUTH_TOKEN),
+  };
+  fs.appendFileSync(env.FAKE_CLAUDE_META_RECORD_FILE, `${JSON.stringify(rec)}\n`);
+}
+
 if (argv.includes('--version')) {
+  recordMeta();
   process.stdout.write('9.9.9-fake (Claude Code)\n');
   process.exit(0);
 }
 
 // `auth status --json` → FIXTURE login state (FAKE_CLAUDE_LOGGED_OUT=1 simulates a logged-out CLI).
+// With ANTHROPIC_API_KEY in the env it answers in the shape the real 2.1.280 CLI printed for an
+// API key (apiKeySource set, subscriptionType null) — the key is not validated.
 if (argv[0] === 'auth' && argv[1] === 'status') {
+  recordMeta();
   const loggedIn = env.FAKE_CLAUDE_LOGGED_OUT !== '1';
-  process.stdout.write(
-    JSON.stringify(
-      loggedIn
-        ? { loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'fixture', email: 'fixture@example.invalid', orgName: 'Fixture Org' }
-        : { loggedIn: false },
-    ) + '\n',
-  );
+  const status = env.ANTHROPIC_API_KEY
+    ? { loggedIn: true, authMethod: 'claude.ai', apiKeySource: 'ANTHROPIC_API_KEY', email: null, orgName: null, subscriptionType: null }
+    : loggedIn
+      ? { loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'fixture', email: 'fixture@example.invalid', orgName: 'Fixture Org' }
+      : { loggedIn: false };
+  process.stdout.write(JSON.stringify(status) + '\n');
   process.exit(0);
 }
 
@@ -75,7 +106,28 @@ if (problems.length > 0) {
 
 const scenario = env.FAKE_CLAUDE_SCENARIO ?? 'ok';
 const model = flagValue('--model') ?? 'claude-fake-default';
-const sessionId = '00000000-0000-4000-8000-000000000000';
+const conversationId = flagValue('--resume') ?? flagValue('--session-id') ?? null;
+const sessionId = conversationId ?? '00000000-0000-4000-8000-000000000000';
+
+// ── conversation running totals (see header) ──
+const statePath = env.FAKE_CLAUDE_STATE_DIR && conversationId ? path.join(env.FAKE_CLAUDE_STATE_DIR, `${conversationId}.json`) : null;
+if (statePath && argv.includes('--session-id') && fs.existsSync(statePath)) {
+  process.stderr.write(`Error: Session ID ${conversationId} is already in use.\n`);
+  process.exit(1);
+}
+if (statePath && argv.includes('--resume') && !fs.existsSync(statePath)) {
+  process.stderr.write(`No conversation found with session ID: ${conversationId}\n`);
+  process.exit(1);
+}
+const state = statePath && fs.existsSync(statePath)
+  ? JSON.parse(fs.readFileSync(statePath, 'utf8'))
+  : { turns: 0, costUsd: 0, apiMs: 0, inputTokens: 0, outputTokens: 0 };
+
+function perTurn(list, fallback) {
+  const values = (list ?? '').split(',').map((v) => v.trim()).filter(Boolean).map(Number);
+  if (values.length === 0) return fallback;
+  return values[Math.min(state.turns, values.length - 1)];
+}
 
 /** Exit only after stdout/stderr are flushed (pipes can be asynchronous). */
 function exitAfterFlush(code) {
@@ -121,21 +173,36 @@ function okResult(structured = decisionFixture()) {
     session_id: sessionId,
     message: { model, role: 'assistant', content: [{ type: 'text', text: 'Placing a small bet.' }] },
   });
+  // Advance the running totals by this turn (stateless runs start from zero every time).
+  if (statePath && env.FAKE_CLAUDE_RESET_TOTALS_ON_TURN === String(state.turns + 1)) {
+    // A resumed transcript without saved totals: the CLI's running total restarts from zero.
+    Object.assign(state, { costUsd: 0, apiMs: 0, inputTokens: 0, outputTokens: 0 });
+  }
+  const turnCost = perTurn(env.FAKE_CLAUDE_TURN_COSTS, 0.00123);
+  const turnApiMs = perTurn(env.FAKE_CLAUDE_TURN_API_MS, 987);
+  state.turns += 1;
+  state.costUsd += turnCost;
+  state.apiMs += turnApiMs;
+  state.inputTokens += USAGE.input_tokens;
+  state.outputTokens += USAGE.output_tokens;
+  if (statePath) fs.writeFileSync(statePath, JSON.stringify(state));
+  const omitTotals = statePath !== null && env.FAKE_CLAUDE_OMIT_TOTALS_ON_TURN === String(state.turns);
   emit({
     type: 'result',
     subtype: 'success',
     is_error: false,
     duration_ms: 1234,
-    duration_api_ms: 987,
+    ...(omitTotals ? {} : { duration_api_ms: state.apiMs }),
     // Live 2.1.280 reports num_turns 2 for one StructuredOutput call and repeats the JSON in result.
     num_turns: 2,
     stop_reason: 'tool_use',
     result: JSON.stringify(structured),
     structured_output: structured,
     session_id: sessionId,
-    total_cost_usd: 0.00123,
+    ...(omitTotals ? {} : { total_cost_usd: state.costUsd }),
+    // result.usage is per run; modelUsage is a running total like total_cost_usd.
     usage: USAGE,
-    modelUsage: { [model]: { inputTokens: USAGE.input_tokens, outputTokens: USAGE.output_tokens, costUSD: 0.00123 } },
+    modelUsage: { [model]: { inputTokens: state.inputTokens, outputTokens: state.outputTokens, costUSD: state.costUsd } },
     permission_denials: [],
   });
 }

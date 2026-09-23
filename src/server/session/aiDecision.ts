@@ -8,6 +8,8 @@
  *    falls back to the demo player; the caller pauses the session instead
  *  - every attempt that reaches the adapter gets exactly one UsageRecord (late results included)
  *  - a result that arrives after Stop / an epoch change is discarded ('stale') but still recorded
+ *  - every model-produced text that is stored (raw output, explanation/strategy, provider note,
+ *    validation errors) goes through redact(); <think> reasoning is stripped and never stored
  */
 import { randomUUID } from 'node:crypto';
 import {
@@ -19,50 +21,58 @@ import {
   type DecisionRecord,
   type PauseReason,
   type PlayerDecision,
-  type Pricing,
   type ProviderError,
   type ResolvedBet,
   type SessionInfo,
   type UsageAttemptStatus,
 } from '../../shared/contracts.js';
 import { validateBetSlip } from '../../shared/bets.js';
-import { decisionJsonSchema, parseDecision } from '../../shared/decision.js';
+import { decisionJsonSchema, parseDecision, stripReasoning } from '../../shared/decision.js';
 import type { DecisionRequest, ProviderAdapter, ProviderCallResult, ResolvedProviderConfig } from '../types.js';
 import { redact } from '../redact.js';
+import { resolvePricing } from '../providers/pricing.js';
 import { resolveProviderConfig } from '../providers/registry.js';
 import { checkBudget } from './budget.js';
 import type { SessionCore } from './core.js';
 import { buildObservation } from './observation.js';
 import { buildCorrectiveNote, buildSystemPrompt, buildUserPrompt } from './prompt.js';
 import { computeBackoffMs, waitAbortable } from './retry.js';
-import { pricingKey } from './settings.js';
 import { buildUsageRecord, UNKNOWN_USAGE, usageStatusFor } from './usage.js';
 
 /** Extra time past req.timeoutMs before the runner stops waiting for a misbehaving adapter. */
 export const WATCHDOG_GRACE_MS = 5_000;
 /** How long a late (abandoned) attempt may take before it is recorded as unknown usage. */
 export const LATE_GIVE_UP_MS = 120_000;
+/** Max characters of the adapter's factual note kept with an accepted decision. */
+export const MAX_PROVIDER_NOTE_CHARS = 300;
 
 /** Why the runner's signal was aborted. */
-export type AbortReason = 'stop' | 'shutdown';
+type AbortReason = 'stop' | 'shutdown';
 
 export type DecisionOutcome =
   | { kind: 'bet'; decisionId: string; bets: ResolvedBet[]; explanation: string | null }
   | { kind: 'skip'; decisionId: string; explanation: string | null }
   | { kind: 'stop'; decisionId: string; explanation: string | null }
   | { kind: 'blocked_budget'; decisionId: string; message: string }
-  | { kind: 'failed'; decisionId: string; pauseReason: Extract<PauseReason, 'provider_error' | 'rate_limited' | 'invalid_output'>; message: string }
+  | {
+      kind: 'failed';
+      decisionId: string;
+      pauseReason: Extract<PauseReason, 'provider_error' | 'rate_limited' | 'invalid_output'>;
+      /** What failed. Says nothing about pausing: the runner decides whether the session pauses. */
+      message: string;
+      /** The provider's last Retry-After, if it sent one (honoured before the next decision). */
+      retryAfterMs: number | null;
+    }
   | { kind: 'aborted'; decisionId: string | null; reason: AbortReason | 'stale' };
 
 /** The rows history needed for an observation: the last `historyWindow` rounds (+1 for a pending one). */
-export function observationRounds(core: SessionCore, session: SessionInfo) {
+function observationRounds(core: SessionCore, session: SessionInfo) {
   return core.repo.listRounds(session.id, { limit: Math.max(1, session.limits.historyWindow + 1) });
 }
 
-/** Pricing assumption for a player: explicit on the player, else settings (defaults merged with user entries). */
-export function resolvePricing(core: SessionCore, kind: AiProviderKind, player: SessionInfo['player'], model: string | undefined): Pricing | null {
-  if (player.pricing) return player.pricing;
-  return core.settings().pricing[pricingKey(kind, model)] ?? null;
+/** Pricing assumption for a session's player (the one resolver: providers/pricing.ts resolvePricing). */
+export function sessionPricing(core: SessionCore, kind: AiProviderKind, player: SessionInfo['player'], model: string | undefined) {
+  return resolvePricing(kind, model, core.settings().pricing, player.pricing);
 }
 
 function newDecision(core: SessionCore, session: SessionInfo, roundNumber: number, model: string | null): DecisionRecord {
@@ -85,6 +95,7 @@ function newDecision(core: SessionCore, session: SessionInfo, roundNumber: numbe
     startedAt: core.nowIso(),
     completedAt: null,
     latencyMs: null,
+    providerNote: null,
   };
 }
 
@@ -93,11 +104,22 @@ function clip(text: string | null | undefined, max: number): string | null {
   return text.length > max ? text.slice(0, max) : text;
 }
 
+/** Placeholder stored when a reply consisted of reasoning only (the reasoning itself is never kept). */
+export const REASONING_ONLY_OUTPUT = '[reasoning removed: the reply contained no text outside <think> blocks]';
+
+/** Model text as stored for inspection: <think> reasoning stripped, secrets masked, clipped. */
+function storedText(text: string): string | null {
+  const stripped = stripReasoning(text);
+  if (!stripped.removed) return clip(redact(text), MAX_RAW_OUTPUT_CHARS);
+  const kept = stripped.text.trim();
+  return clip(redact(kept === '' ? REASONING_ONLY_OUTPUT : kept), MAX_RAW_OUTPUT_CHARS);
+}
+
 function rawOutputOf(result: ProviderCallResult): string | null {
-  if (result.text !== null && result.text !== undefined) return clip(redact(result.text), MAX_RAW_OUTPUT_CHARS);
+  if (result.text !== null && result.text !== undefined) return storedText(result.text);
   if (result.structured !== undefined) {
     try {
-      return clip(redact(JSON.stringify(result.structured)), MAX_RAW_OUTPUT_CHARS);
+      return storedText(JSON.stringify(result.structured));
     } catch {
       return null;
     }
@@ -137,6 +159,7 @@ export function demoDecision(core: SessionCore, session: SessionInfo): DecisionO
         decisionId: rec.id,
         pauseReason: 'invalid_output',
         message: `The demo player's bet was rejected by the table rules: ${errors.join('; ')}`,
+        retryAfterMs: null,
       };
     }
   }
@@ -233,11 +256,11 @@ export async function requestAiDecision(
   if (!adapter) {
     const message = `No adapter is available for provider "${kind}".`;
     finish({ status: 'failed', errorCode: 'not_configured', errorMessage: message });
-    return { kind: 'failed', decisionId: decision.id, pauseReason: 'provider_error', message };
+    return { kind: 'failed', decisionId: decision.id, pauseReason: 'provider_error', message, retryAfterMs: null };
   }
 
   const caps = adapter.capabilities;
-  const pricing = resolvePricing(core, kind, session.player, cfg.model);
+  const pricing = sessionPricing(core, kind, session.player, cfg.model);
   const systemPrompt = buildSystemPrompt(obs, {
     allowStop: session.limits.allowModelStop === true,
     runtimeLimited: session.limits.maxRuntimeSec !== null,
@@ -407,9 +430,13 @@ export async function requestAiDecision(
         record(result, 'ok');
         // The stated strategy is kept with the explanation so every view (card, log, export) shows it.
         // Stored as "Strategy: <name>" on its own first line, then the explanation (the UI splits them).
-        const strategyLine = decided.strategy ? `Strategy: ${decided.strategy.replace(/\s+/g, ' ')}` : '';
-        const stated = [strategyLine, decided.explanation ?? ''].filter(Boolean).join('\n');
+        // Both are model text, masked like every other stored provider text.
+        const strategyLine = decided.strategy ? `Strategy: ${redact(decided.strategy.replace(/\s+/g, ' '))}` : '';
+        const stated = [strategyLine, decided.explanation ? redact(decided.explanation) : ''].filter(Boolean).join('\n');
         const explanation = clip(stated === '' ? null : stated, MAX_EXPLANATION_CHARS + MAX_STRATEGY_CHARS + 11);
+        // The adapter's factual note (CLI conversation turn, Laya labels / routing), shown with the decision.
+        const note = typeof result.note === 'string' ? result.note.trim() : '';
+        const providerNote = note === '' ? null : clip(redact(note), MAX_PROVIDER_NOTE_CHARS);
         finish({
           status: 'accepted',
           action: decided.action,
@@ -419,6 +446,7 @@ export async function requestAiDecision(
           validationErrors: [],
           errorCode: null,
           errorMessage: null,
+          providerNote,
         });
         if (decided.action === 'bet') return { kind: 'bet', decisionId: decision.id, bets: resolved, explanation };
         if (decided.action === 'skip') return { kind: 'skip', decisionId: decision.id, explanation };
@@ -441,19 +469,22 @@ export async function requestAiDecision(
     const errors = lastFailure?.errors ?? ['no valid decision'];
     const message =
       `${label} returned invalid output ${attempts} time${attempts === 1 ? '' : 's'}; no bet was placed. ` +
-      `Last problem: ${errors[0] ?? 'unknown'}. Session paused — press Start to try again.`;
+      `Last problem: ${errors[0] ?? 'unknown'}.`;
     finish({ status: 'invalid', validationErrors: errors, errorCode: 'invalid_output', errorMessage: message, rawOutput: lastRaw });
-    return { kind: 'failed', decisionId: decision.id, pauseReason: 'invalid_output', message };
+    return { kind: 'failed', decisionId: decision.id, pauseReason: 'invalid_output', message, retryAfterMs: null };
   }
   const err = lastFailure.error;
   const message =
     `${label} request failed after ${attempts} attempt${attempts === 1 ? '' : 's'} (${err.code}${err.httpStatus ? ` ${err.httpStatus}` : ''}): ` +
-    `${err.message}. No bet was placed. Session paused — press Start to try again.`;
+    `${err.message}. No bet was placed.`;
   finish({ status: 'failed', errorCode: err.code, errorMessage: message });
+  const retryAfterMs =
+    typeof err.retryAfterMs === 'number' && Number.isFinite(err.retryAfterMs) && err.retryAfterMs >= 0 ? err.retryAfterMs : null;
   return {
     kind: 'failed',
     decisionId: decision.id,
     pauseReason: err.code === 'rate_limited' ? 'rate_limited' : 'provider_error',
     message,
+    retryAfterMs,
   };
 }

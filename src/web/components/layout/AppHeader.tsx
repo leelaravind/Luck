@@ -12,6 +12,8 @@ export interface AppHeaderProps {
   readonly sessions: readonly SessionInfo[];
   readonly selectedId: string | null;
   readonly onSelect: (id: string) => void;
+  /** The session picker was focused or opened: a chance to refresh the list (sessions made elsewhere). */
+  readonly onPickerOpen?: () => void;
   readonly onNewSession: () => void;
   readonly onOpenSettings: () => void;
   /** A session is loaded, so a live event stream is expected. */
@@ -26,6 +28,7 @@ export function AppHeader({
   sessions,
   selectedId,
   onSelect,
+  onPickerOpen,
   onNewSession,
   onOpenSettings,
   streaming,
@@ -59,6 +62,7 @@ export function AppHeader({
             value={selectedId ?? ''}
             options={selectedId ? options : [{ value: '', label: sorted.length ? 'Choose a session…' : COPY.noSessions, disabled: true }, ...(sorted.length ? options : [])]}
             onChange={(v) => v && onSelect(v)}
+            onOpen={onPickerOpen}
             className="min-w-0 flex-1 lg:max-w-sm"
           />
           <Button variant="primary" size="md" icon={<Plus aria-hidden="true" className="h-4 w-4" />} onClick={onNewSession}>

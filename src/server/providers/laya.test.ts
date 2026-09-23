@@ -12,6 +12,7 @@ import {
   LAYA_CAPABILITIES,
   LAYA_CRITERIA,
   LAYA_INSTRUCTIONS,
+  buildLayaRequestBody,
   buildLayaState,
   createLayaAdapter,
   layaLabelToDecision,
@@ -304,5 +305,24 @@ describe('laya adapter (mock laya-serve fixture)', () => {
     expect(s).toContain('net -10');
     // No house-edge / predictability commentary in model-facing text (user request).
     expect(s).not.toMatch(/house edge|cannot be predicted|independent/i);
+  });
+
+  // Everything Laya sees is the request body: state + question instructions + criteria.
+  const COMMENTARY = /house[ -]?edge|edge|cannot be predicted|unpredictable|predict|random|chance|independent|odds|expected (value|loss)|luck/i;
+
+  it('the WHOLE request body carries no house-edge / randomness / predictability commentary', () => {
+    const body = buildLayaRequestBody(OBS, 'english');
+    expect(JSON.stringify(body)).not.toMatch(COMMENTARY);
+    expect(JSON.stringify(buildLayaRequestBody({ ...OBS, history: [], stats: { roundsPlayed: 0, netResult: 0 } }, undefined))).not.toMatch(COMMENTARY);
+    expect(LAYA_INSTRUCTIONS).toBe('Choose the next action in a virtual European roulette game.');
+    expect(Object.keys(body).sort()).toEqual(['model', 'questions', 'state']);
+  });
+
+  it('the body actually sent by decide() is exactly buildLayaRequestBody and is free of that commentary', async () => {
+    const baseUrl = await mockLaya((_s, res) => json(res, 200, layaAnswer('skip', { skip: 0.6, red: 0.4 })));
+    const r = await createLayaAdapter().decide(request(), { kind: 'laya', baseUrl, layaCheckpoint: 'english' }, signal());
+    expect(r.ok).toBe(true);
+    expect(seen[0].body).toEqual(buildLayaRequestBody(OBS, 'english'));
+    expect(JSON.stringify(seen[0].body)).not.toMatch(COMMENTARY);
   });
 });

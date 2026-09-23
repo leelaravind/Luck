@@ -1,19 +1,24 @@
-import type { DecisionRecord, SessionMode } from '../../../shared/contracts';
+import type { DecisionRecord, SessionMode, UsageRecord } from '../../../shared/contracts';
 import { COPY, DECISION_STATUS_LABEL, MISSING_REASON } from '../../copy';
 import { betLabel, formatCredits, formatMs, splitStatedStrategy } from '../../state/format';
 import { Badge, type BadgeTone } from '../common/Badge';
 import { Card } from '../common/Card';
 import { EmptyState } from '../common/EmptyState';
 import { NotReported } from '../common/NotReported';
+import { DecisionUsage } from './DecisionUsage';
+import { ProviderNote } from './ProviderNote';
 
 /**
  * The latest decision exactly as recorded by the server: action, proposed bets, the player's own
- * explanation (clearly marked unverified), validation result and latency. No confidence / EV / Kelly
- * figures — none are measured.
+ * explanation (clearly marked unverified), validation result, latency, the provider adapter's note and
+ * the usage of each attempt (tokens, cost with its basis, latency). No confidence / EV / Kelly figures —
+ * none are measured.
  */
 export interface LatestDecisionCardProps {
   readonly decision: DecisionRecord | null;
   readonly mode: SessionMode | null;
+  /** Usage records of this decision (matched by decisionId), attempts in order. */
+  readonly usage: readonly UsageRecord[];
 }
 
 const STATUS_TONE: Record<DecisionRecord['status'], BadgeTone> = {
@@ -27,7 +32,7 @@ const STATUS_TONE: Record<DecisionRecord['status'], BadgeTone> = {
   blocked_budget: 'warning',
 };
 
-export function LatestDecisionCard({ decision, mode }: Readonly<LatestDecisionCardProps>) {
+export function LatestDecisionCard({ decision, mode, usage }: Readonly<LatestDecisionCardProps>) {
   if (mode === 'manual' || mode === null) return null;
   const d = decision;
   const stated = splitStatedStrategy(d?.explanation);
@@ -96,6 +101,8 @@ export function LatestDecisionCard({ decision, mode }: Readonly<LatestDecisionCa
             </p>
           ) : null}
 
+          <ProviderNote note={d.providerNote} />
+
           <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-2 font-mono text-[11px] text-ink-muted">
             <dt>Latency</dt>
             <dd className="m-0 text-ink">
@@ -117,6 +124,8 @@ export function LatestDecisionCard({ decision, mode }: Readonly<LatestDecisionCa
               </>
             ) : null}
           </dl>
+
+          {mode === 'ai' ? <DecisionUsage records={usage} decisionStatus={d.status} /> : null}
         </>
       )}
     </Card>

@@ -32,7 +32,7 @@ const intQuery = (max: number) =>
     .pipe(z.number().int().min(1).max(max))
     .optional();
 
-export const pricingSchema = z.strictObject({
+const pricingSchema = z.strictObject({
   inputPerMTokUsd: z.number().min(0),
   outputPerMTokUsd: z.number().min(0),
   cacheReadPerMTokUsd: z.number().min(0).optional(),
@@ -42,7 +42,7 @@ export const pricingSchema = z.strictObject({
 });
 
 /** Non-secret player configuration. Unknown keys (e.g. apiKey) are rejected. */
-export const playerConfigSchema = z.strictObject({
+const playerConfigSchema = z.strictObject({
   kind: z.enum(PLAYER_KINDS),
   model: z.string().max(200).optional(),
   baseUrl: z.string().max(2048).optional(),
@@ -53,7 +53,7 @@ export const playerConfigSchema = z.strictObject({
 
 const count = z.number().int();
 /** Every SessionLimits field, all required. Values are range-checked by the service. */
-export const sessionLimitsSchema = z.strictObject({
+const sessionLimitsSchema = z.strictObject({
   startingBalance: count,
   minStake: count,
   stakeIncrement: count,
@@ -89,7 +89,10 @@ export const providerBody = z.strictObject({ player: playerConfigSchema.optional
 export const settingsPatchBody = z.strictObject({
   defaultLimits: sessionLimitsSchema.optional(),
   animationSpeed: z.enum(['normal', 'fast', 'instant']).optional(),
+  /** Server wait between autonomous rounds in ms (0..600000); independent of animationSpeed. */
+  roundPacingMs: z.number().int().min(0).max(600_000).optional(),
   reduceMotion: z.enum(['system', 'on', 'off']).optional(),
+  /** The complete map of the user's pricing entries (omitted user entries are deleted). */
   pricing: z.record(z.string().max(300), pricingSchema).optional(),
   players: z.partialRecord(z.enum(AI_KINDS), playerConfigSchema).optional(),
 });

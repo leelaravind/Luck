@@ -7,7 +7,8 @@ bets with **virtual credits**. Everything runs on your own computer.
 > applies at the moment. Third-party credits and licences are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 More documentation: [architecture](docs/architecture.md) · [AI providers](docs/providers.md) ·
-[configuration](docs/configuration.md) · [troubleshooting](docs/troubleshooting.md)
+[Claude Code CLI & Laya](docs/providers-cli-laya.md) · [configuration](docs/configuration.md) ·
+[troubleshooting](docs/troubleshooting.md) · [testing](docs/testing.md) · [verification report](docs/verification.md)
 
 ---
 
@@ -32,15 +33,16 @@ More documentation: [architecture](docs/architecture.md) · [AI providers](docs/
 | What | Version |
 |---|---|
 | Operating system | **Windows 10 / 11 first**; macOS and Linux also work |
-| Node.js | **22.13 or newer (22 LTS)**, or **24** — download from <https://nodejs.org/> |
+| Node.js | **22.22.2 or newer** (22 LTS), or **24.15 or newer** — download from <https://nodejs.org/> |
 | npm | comes with Node.js |
-| Git | to download the project (or download the ZIP from GitHub) |
+| Git | recommended, to download the project with `git clone` (a ZIP download from GitHub works too — see step 3) |
 
 Optional, only if you want to use them as players: [Ollama](https://ollama.com/) for local models, an
 Anthropic or OpenAI-compatible API key, the Claude Code CLI, or a local `laya-serve`.
 See [docs/providers.md](docs/providers.md).
 
-Check your Node.js version with `node --version`.
+Check your Node.js version with `node --version`. Older releases (22.x before 22.22.2, 24.x before 24.15) are not
+supported; the test tools need at least these versions.
 
 ## 3. Install
 
@@ -61,6 +63,11 @@ npm ci
 ```
 
 Nothing is installed globally. (Shortcut: the start scripts in step 5 run `npm ci` for you if needed.)
+
+**Without git:** on the GitHub page choose *Code → Download ZIP*, unpack it, open a terminal in the unpacked
+`Luck` folder and run `npm ci`. Everything works the same; `git clone` is still recommended because it makes
+updating easy. In a folder that is not a git repository, `npm run secret-scan` (and its test) prints a notice and
+scans the folder itself, skipping what `.gitignore` excludes, instead of asking git.
 
 ## 4. Configure
 
@@ -137,6 +144,11 @@ they cannot end the session themselves. In the New session dialog you can option
 rounds, a running time, table limits (maximum stake per bet or per round, maximum bets per round), an app
 spending limit (USD), or let the model end the session. Leaving a field blank means "no limit".
 
+**How often a model is asked** is set by **Settings → Autonomous play → Pause between autonomous rounds**
+(default 7 seconds, applies to every autonomous session): after each round the server waits that long before it
+asks the player for the next decision. The wheel's animation speed (1× / 2× / Max) changes only the animation —
+not how often models are called.
+
 > Virtual credits cost nothing, but model requests may: with an Anthropic/OpenAI **API key** every request is
 > billed to your account, and Claude Code on a subscription uses your plan quota. Set an app spending limit if
 > you want Luck to stop before that.
@@ -150,10 +162,11 @@ npm run build
 ```
 
 `npm test` runs the automated test suite (vitest); `typecheck` and `build` check that everything compiles.
+`npm run secret-scan` checks the files a commit would contain for API keys and files that must never be committed.
 
 ## 9. Troubleshooting
 
-- **`node` is not recognised / version too old** — install Node.js 22.13+ or 24 from nodejs.org and open a new terminal.
+- **`node` is not recognised / version too old** — install Node.js 22.22.2+ (22 LTS) or 24.15+ from nodejs.org and open a new terminal.
 - **"Port 3717 is already in use"** — Luck may already be running in another window. Close it, or set another `LUCK_PORT` in `.env`. Luck never stops other programs for you.
 - **Scripts are blocked in PowerShell** — run `powershell -ExecutionPolicy Bypass -File .\scripts\start.ps1` (this only affects that one run).
 - **A provider shows "not configured"** — check its key / URL in `.env`, restart, then use the connection test.

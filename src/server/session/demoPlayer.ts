@@ -15,7 +15,7 @@ import { formatCredits } from '../../shared/money.js';
 export const DEMO_PLAYER_LABEL = 'Rule-based demo player (not AI)';
 
 /** Even-money bets in the order the demo player cycles through them. */
-export const DEMO_BET_CYCLE: readonly BetType[] = ['red', 'black', 'odd', 'even', 'low', 'high'];
+const DEMO_BET_CYCLE: readonly BetType[] = ['red', 'black', 'odd', 'even', 'low', 'high'];
 
 const BET_NAMES: Record<string, string> = {
   red: 'Red',

@@ -22,11 +22,14 @@ export const POCKET_ANGLE = 360 / POCKET_COUNT;
 /** Slow clockwise rotor drift while idle (after a settle), in degrees per second. */
 export const IDLE_DEG_PER_SEC = 6;
 
-/** Spin durations per animation speed (presentation only; never affects model call frequency). */
+/**
+ * Spin durations per animation speed (presentation only; never affects model call frequency).
+ * "instant" is 0: no spin at all — the ball is placed straight into the pocket, as with reduced motion.
+ */
 export const SPIN_DURATION_MS: Readonly<Record<AnimationSpeed, number>> = Object.freeze({
   normal: 6500,
   fast: 3200,
-  instant: 400,
+  instant: 0,
 });
 
 /** Fractions of the spin duration at which the ball stages change. */
@@ -55,7 +58,7 @@ export interface SpinOptions {
   durationMs: number;
   /** Presentation-only randomness in [0, 1). Default Math.random. Never influences the landing pocket. */
   rand?: () => number;
-  /** Full relative laps of the ball around the rotor (k). Default by duration: 4–5 normal, 3 fast, 1 instant. */
+  /** Full relative laps of the ball around the rotor (k). Default by duration: 4–5 normal, 3 fast, 1 for short spins. */
   laps?: number;
   /** Rotor push in full turns during the spin (clockwise ease-out). Default scales with duration. */
   rotorTurns?: number;
@@ -157,7 +160,7 @@ function assertFinite(name: string, v: number): void {
 /**
  * Build a trajectory from `start` that lands in `winningNumber`'s pocket at t = durationMs.
  * With durationMs = 0 the plan is already settled at t = 0 (ball placed straight into the pocket,
- * rotor untouched) — used for reduced motion.
+ * rotor untouched) — used for reduced motion and the "instant" speed.
  */
 export function planSpin(start: SpinStart, winningNumber: number, opts: SpinOptions): SpinPlan {
   if (!isRouletteNumber(winningNumber)) throw new RangeError(`Not a roulette number: ${winningNumber}`);

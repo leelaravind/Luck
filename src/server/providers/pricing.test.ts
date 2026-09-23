@@ -39,8 +39,13 @@ describe('DEFAULT_PRICING (documented default assumptions)', () => {
   it('resolvePricing prefers explicit, then user, then default', () => {
     expect(resolvePricing('anthropic', 'claude-opus-5')).toBe(DEFAULT_PRICING['anthropic:claude-opus-5']);
     expect(resolvePricing('anthropic', 'claude-opus-5', { 'anthropic:claude-opus-5': user })).toBe(user);
-    expect(resolvePricing('openai', 'gpt-x')).toBeUndefined();
-    expect(resolvePricing('anthropic', undefined)).toBeUndefined();
+    expect(resolvePricing('openai', 'gpt-x')).toBeNull();
+    expect(resolvePricing('anthropic', undefined)).toBeNull();
+    expect(resolvePricing('anthropic', null, { 'anthropic:': user })).toBeNull(); // a price is always per model
+    const explicit: Pricing = { inputPerMTokUsd: 9, outputPerMTokUsd: 9, source: 'user' };
+    expect(resolvePricing('anthropic', 'claude-opus-5', { 'anthropic:claude-opus-5': user }, explicit)).toBe(explicit);
+    expect(resolvePricing('openai', undefined, {}, explicit)).toBe(explicit);
+    expect(resolvePricing('openai', 'gpt-x', { 'openai:gpt-x': user })).toBe(user);
   });
 });
 

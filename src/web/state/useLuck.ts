@@ -18,6 +18,7 @@ import type {
   RoundRecord,
   ServerEvent,
   SessionInfo,
+  SessionStatus,
 } from '../../shared/contracts';
 import { ApiError, createApiClient, errorMessage, type ApiClient } from '../api/client';
 import { useEventStream } from '../hooks/useEventStream';
@@ -80,13 +81,12 @@ export function useLuck(opts: UseLuckOptions = {}) {
   const reducedMotion = useReducedMotion(state.settings?.reduceMotion ?? 'system');
   const pageHidden = usePageHidden();
 
-  // Evaluated at dispatch time: should a newly known outcome skip the animation?
-  const motionRef = useRef({ reducedMotion, speed });
-  motionRef.current = { reducedMotion, speed };
-  const immediate = useCallback(
-    () => isPageHidden() || motionRef.current.reducedMotion || motionRef.current.speed === 'instant',
-    [],
-  );
+  // Evaluated at dispatch time: should a newly known outcome skip the wheel entirely? (Hidden tab or
+  // reduced motion.) At "instant" speed the wheel still gets the spin: it places the ball at once and
+  // reports onSettled on the next tick, so the result is revealed only after the ball is in the pocket.
+  const motionRef = useRef({ reducedMotion });
+  motionRef.current = { reducedMotion };
+  const immediate = useCallback(() => isPageHidden() || motionRef.current.reducedMotion, []);
 
   // Guards against repeated clicks, independent of render timing.
   const inflight = useRef(new Set<string>());
@@ -277,14 +277,70 @@ export function useLuck(opts: UseLuckOptions = {}) {
   // ───────────── actions ─────────────
   const selectSession = useCallback((id: string | null) => dispatch({ type: 'select', sessionId: id }), []);
 
-  const refreshSessions = useCallback(async () => {
-    try {
-      const { sessions } = await api.listSessions();
-      dispatch({ type: 'sessions', sessions });
-    } catch (err) {
-      fail('load', err);
+  /**
+   * Re-read GET /api/sessions (sessions created elsewhere, other sessions' status and balance). Calls made
+   * while one is in flight are coalesced into ONE follow-up request, so the newest state is always read.
+   * `quiet` (background refreshes: window focus, picker, history tab, status change) does not report a
+   * failure as a page error — the connection indicator already shows an unreachable server.
+   */
+  const sessionsFetch = useRef<{ running: boolean; again: boolean; quiet: boolean }>({ running: false, again: false, quiet: true });
+  const refreshSessions = useCallback(
+    async (opts: { quiet?: boolean } = {}): Promise<void> => {
+      const f = sessionsFetch.current;
+      const quiet = opts.quiet ?? false;
+      if (f.running) {
+        f.again = true;
+        f.quiet &&= quiet;
+        return;
+      }
+      f.running = true;
+      let currentQuiet = quiet;
+      try {
+        for (;;) {
+          try {
+            const { sessions } = await api.listSessions();
+            dispatch({ type: 'sessions', sessions });
+          } catch (err) {
+            if (!currentQuiet) fail('load', err);
+          }
+          if (!f.again) break;
+          currentQuiet = f.quiet;
+          f.again = false;
+          f.quiet = true;
+        }
+      } finally {
+        f.running = false;
+      }
+    },
+    [api, fail],
+  );
+
+  // Window regains focus / tab becomes visible again: the list may be stale.
+  useEffect(() => {
+    const onFocus = () => void refreshSessions({ quiet: true });
+    const onVisible = () => {
+      if (!isPageHidden()) void refreshSessions({ quiet: true });
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [refreshSessions]);
+
+  // The open session's status changed (started, paused, stopped, completed…): refresh the whole list.
+  const openId = state.snapshot?.session.id ?? null;
+  const openStatus = state.snapshot?.session.status ?? null;
+  const lastOpen = useRef<{ id: string | null; status: SessionStatus | null }>({ id: null, status: null });
+  useEffect(() => {
+    const prev = lastOpen.current;
+    lastOpen.current = { id: openId, status: openStatus };
+    // Same session, new status (a switch to another session is not a status change).
+    if (openId !== null && prev.id === openId && prev.status !== null && prev.status !== openStatus) {
+      void refreshSessions({ quiet: true });
     }
-  }, [api, fail]);
+  }, [openId, openStatus, refreshSessions]);
 
   const refreshProviders = useCallback(async () => {
     try {

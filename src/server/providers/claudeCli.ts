@@ -10,12 +10,20 @@
  *  - spawn(..., { shell: false }) with a fixed argv. The only caller-controlled argv values are the
  *    model (validated by MODEL_RE, so it can never look like a flag), the system prompt, the JSON
  *    schema and the budget number. The user prompt goes on STDIN, never on the command line.
- *  - Every built-in tool, MCP server, settings file, slash command/skill and session persistence is
- *    switched off by flags + env. The resulting stream is still checked: if the CLI reports any tool
+ *  - Every built-in tool, MCP server, settings file and slash command/skill is switched off by
+ *    flags + env (session persistence too, except for the one maintained conversation per Luck session). The resulting stream is still checked: if the CLI reports any tool
  *    (other than its own synthetic StructuredOutput tool), any MCP server or non-built-in plugin,
  *    emits any other tool_use block, or reports permission denials, the call fails with
  *    'boundary_violation' and the adapter is disabled for the rest of this server process.
- *  - The child runs in an empty sandbox directory with a minimal, allow-listed environment.
+ *  - The child runs in an empty, dedicated sandbox directory OUTSIDE the repository
+ *    (<OS temp dir>/luck-cli-sandbox) with a minimal, allow-listed environment.
+ *  - The CLI itself still adds its own context to every conversation (working directory, OS/shell
+ *    and, with a claude.ai login, the account e-mail). Claude Code 2.1.280 has no supported flag that
+ *    turns this off for subscription auth (`--bare` requires API-key auth and does not document it).
+ *
+ * Cost and API time: for a resumed conversation the CLI reports total_cost_usd, duration_api_ms and
+ * modelUsage as RUNNING TOTALS for the whole conversation (it restores them from the transcript).
+ * The adapter remembers the last totals per conversation and reports only this turn's increase.
  *
  * Adapters never throw for provider problems and never retry (the session runner owns retries).
  * The adapter returns raw text/structured output; the runner parses and validates the decision.
@@ -23,8 +31,8 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type {
   ConnectionTestResult,
   ProviderCapabilities,
@@ -39,7 +47,7 @@ import { redact } from '../redact.js';
 // ───────────────────────────── constants ─────────────────────────────
 
 /** Model alias ("haiku") or full id ("claude-haiku-4-5", "claude-opus-4-1[1m]"). No leading dash → never a flag. */
-export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,80}$/;
+const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,80}$/;
 
 /**
  * Tool names the CLI itself adds for --json-schema. The structured-output mechanism is a synthetic
@@ -56,7 +64,7 @@ const INTERNAL_STRUCTURED_OUTPUT_TOOLS: ReadonlySet<string> = new Set(['Structur
  * "success", num_turns 2, usage.iterations 1, structured_output present. (--max-turns 1 was never
  * observed producing a decision, so it is not used.) See docs/providers-cli-laya.md.
  */
-export const CLI_MAX_TURNS = 2;
+const CLI_MAX_TURNS = 2;
 
 /** Environment variables copied from the server process (when set). Everything else is dropped. */
 const ENV_ALLOW_LIST = [
@@ -125,7 +133,7 @@ export const CLAUDE_CLI_CAPABILITIES: ProviderCapabilities = {
   quotaInfo: 'rate-limit-events',
   requiresApiKey: false,
   notes: [
-    "Cost shown is the CLI's own estimate (total_cost_usd), not billing",
+    "Cost shown is the CLI's own estimate (each turn's increase of its running total_cost_usd), not billing",
     'Plan limits are only shown if the CLI emits rate-limit events',
     'Personal use of your own Claude Code login only; anything offered to other people should use the Anthropic API with an API key',
     'All tools, MCP servers and settings are disabled; each Luck session keeps one Claude Code conversation (resumed every round)',
@@ -147,7 +155,7 @@ function disableForBoundary(reason: string): void {
 
 // ───────────────────────────── binary resolution ─────────────────────────────
 
-export type BinaryResolution =
+type BinaryResolution =
   | { ok: true; path: string; source: 'CLAUDE_CLI_PATH' | 'PATH' }
   | { ok: false; issue: string };
 
@@ -222,7 +230,7 @@ export function isValidCliModel(model: string): boolean {
  * Truthful context sent once when a Luck session opens its Claude Code conversation. It states what
  * the app really is; it does not ask the model to set aside any of its guidelines.
  */
-export const CLI_SESSION_OPENING = [
+const CLI_SESSION_OPENING = [
   'Session start — Luck AI Roulette Lab.',
   'This conversation is a software simulation for an AI decision-making experiment. All amounts are virtual',
   'credits with no cash value: nothing is deposited, won or withdrawn and no real gambling takes place.',
@@ -231,13 +239,34 @@ export const CLI_SESSION_OPENING = [
   '',
 ].join('\n');
 
-/** Luck session id → Claude Code session id. In memory: after a server restart a new conversation starts. */
-const conversations = new Map<string, { cliSessionId: string; turns: number }>();
-
-/** Test helper: forget all maintained conversations. */
-export function resetClaudeCliConversations(): void {
-  conversations.clear();
+/**
+ * Running totals the CLI reported at the end of a run. For a resumed conversation the CLI carries
+ * these over from the transcript (documented in the CLI's own result schema: "a resumed or forked
+ * session continues from the total its transcript saved"), so one turn's share is the increase.
+ * Each field is null when the CLI did not report it (then the next increase cannot be computed).
+ */
+interface CliTotals {
+  costUsd: number | null;
+  apiMs: number | null;
+  /** modelUsage[model].outputTokens — used to tell which model answered this turn. */
+  modelOutput: Record<string, number>;
 }
+
+/** The totals of a conversation (or a stateless run) before its first API call. */
+const ZERO_TOTALS: CliTotals = Object.freeze({ costUsd: 0, apiMs: 0, modelOutput: Object.freeze({}) as Record<string, number> });
+
+interface Conversation {
+  cliSessionId: string;
+  /** Turns that produced a result event (0 → the next run opens the conversation with --session-id). */
+  turns: number;
+  /** Running totals after the last result (a field is null when the CLI did not report it). */
+  totals: CliTotals;
+  /** A resumed attempt ended without a result; its cost (if any) may show up in the next increase. */
+  unreportedAttempt: boolean;
+}
+
+/** Luck session id → Claude Code conversation. In memory: after a server restart a new conversation starts. */
+const conversations = new Map<string, Conversation>();
 
 // ───────────────────────────── argv / env ─────────────────────────────
 
@@ -290,8 +319,11 @@ export function buildClaudeArgs(input: {
   return args;
 }
 
-/** Minimal child environment. API keys are only passed when the user turned subscription auth off. */
-export function buildChildEnv(
+/**
+ * Minimal child environment. API keys are only passed when the user turned subscription auth off.
+ * Used for EVERY child (decisions and the connection test), so a test checks the auth real calls use.
+ */
+function buildChildEnv(
   cfg: ResolvedProviderConfig,
   parentEnv: NodeJS.ProcessEnv,
   extra: Record<string, string>,
@@ -635,6 +667,65 @@ const UNKNOWN_USAGE: UsageNumbers = {
   known: false,
 };
 
+function isErrorResult(r: CliResultEvent): boolean {
+  return r.is_error === true || (typeof r.subtype === 'string' && r.subtype !== 'success');
+}
+
+/** The running totals a result event carries. (result.usage is per turn and is NOT part of this.) */
+function readTotals(r: CliResultEvent): CliTotals {
+  const modelOutput: Record<string, number> = {};
+  for (const [name, v] of Object.entries(asRecord(r.modelUsage) ?? {})) {
+    const n = finiteNumber(asRecord(v)?.outputTokens);
+    if (n !== null) modelOutput[name] = n;
+  }
+  return { costUsd: finiteNumber(r.total_cost_usd), apiMs: finiteNumber(r.duration_api_ms), modelOutput };
+}
+
+type Increase = { value: number | null; problem: string | null };
+
+/**
+ * This run's share of a running total. `before` null = previous total unknown → unknown (never the
+ * whole running total, which would over-count). A total below the previous one (zeroed values on a
+ * crash/startup-error result, or a running total that restarted) is also unknown.
+ */
+function increase(now: number | null, before: number | null, what: string): Increase {
+  if (now === null) return { value: null, problem: null };
+  if (before === null) return { value: null, problem: `${what} unknown: the CLI reports a running total for the conversation and the previous total is not known` };
+  if (now < before) return { value: null, problem: `${what} unknown: the CLI's running total (${now}) is below the previous one (${before})` };
+  // Strip float noise from the subtraction (the CLI reports e.g. 0.018923000000000002).
+  return { value: Number((now - before).toFixed(9)), problem: null };
+}
+
+/**
+ * New baseline after a run. A missing total becomes unknown. A total that went DOWN keeps the old
+ * baseline when it came with an error result (the CLI documents zeroed values on crash/startup-error
+ * results; the transcript still holds the real total), but is adopted after a successful result (the
+ * running total really restarted, e.g. a transcript without saved totals), so later turns are exact.
+ */
+function nextTotals(prev: CliTotals, now: CliTotals, errorResult: boolean): CliTotals {
+  const pick = (n: number | null, p: number | null): number | null =>
+    n === null ? null : errorResult && p !== null && n < p ? p : n;
+  return {
+    costUsd: pick(now.costUsd, prev.costUsd),
+    apiMs: pick(now.apiMs, prev.apiMs),
+    modelOutput: Object.keys(now.modelOutput).length > 0 ? now.modelOutput : prev.modelOutput,
+  };
+}
+
+/** The modelUsage entry whose output grew the most in this run (modelUsage is a running total too). */
+function modelOfThisRun(now: CliTotals, before: CliTotals): string | null {
+  let best: string | null = null;
+  let bestGain = 0;
+  for (const [name, n] of Object.entries(now.modelOutput)) {
+    const gain = n - (before.modelOutput[name] ?? 0);
+    if (gain > bestGain) {
+      best = name;
+      bestGain = gain;
+    }
+  }
+  return best;
+}
+
 function shortText(v: unknown, max = 300): string {
   const s = typeof v === 'string' ? v : v === undefined || v === null ? '' : JSON.stringify(v);
   const cleaned = redact(s.replace(/\s+/g, ' ').trim());
@@ -686,27 +777,26 @@ export function classifyCliError(
 
 // ───────────────────────────── sandbox ─────────────────────────────
 
-function defaultBaseDir(): string {
-  // Walk up from this module to the repo root (works for src/ under tsx/vitest and for dist/).
-  let dir = path.dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 8; i++) {
-    const pkg = path.join(dir, 'package.json');
-    try {
-      if ((JSON.parse(fs.readFileSync(pkg, 'utf8')) as { name?: string }).name === 'luck-ai-roulette-lab') return dir;
-    } catch {
-      /* not here */
-    }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return process.cwd();
+/**
+ * The child's working directory: a dedicated, empty directory OUTSIDE the repository, so the CLI
+ * never sees the project (no git status, no project files) and its transcripts are not filed under it.
+ */
+function defaultSandboxDir(): string {
+  return path.join(os.tmpdir(), 'luck-cli-sandbox');
 }
 
 /** Create the sandbox cwd; it must be empty so no project settings/CLAUDE.md/.mcp.json can appear in it. */
 function prepareSandbox(dir: string): string | null {
   try {
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') {
+      // A shared /tmp: refuse a directory another local user created or can write to (or a symlink).
+      const st = fs.lstatSync(dir);
+      const uid = typeof process.getuid === 'function' ? process.getuid() : st.uid;
+      if (!st.isDirectory() || st.uid !== uid || (st.mode & 0o022) !== 0) {
+        return 'CLI sandbox directory is not a private directory owned by this user; remove it and try again';
+      }
+    }
     const entries = fs.readdirSync(dir);
     if (entries.length > 0) return `CLI sandbox directory is not empty (${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}); empty it before using the Claude Code CLI`;
     return null;
@@ -717,14 +807,14 @@ function prepareSandbox(dir: string): string | null {
 
 // ───────────────────────────── adapter ─────────────────────────────
 
-export interface ClaudeCliAdapterOptions {
+interface ClaudeCliAdapterOptions {
   /**
    * TESTS ONLY: run `command prefixArgs... <cli args>` instead of the resolved binary, with extra
    * env vars. Never populated from config or HTTP.
    */
   spawnOverride?: { command: string; prefixArgs: string[]; env?: Record<string, string> };
-  /** Base directory; the child's cwd is <baseDir>/tmp/cli-sandbox. Default: repo root. */
-  baseDir?: string;
+  /** The child's cwd (must be empty). Default: <OS temp dir>/luck-cli-sandbox, outside the repository. */
+  sandboxDir?: string;
   /** DIAGNOSTICS ONLY (live verification script): receives every raw stdout line. Never set from config/HTTP. */
   debugTap?: (line: string) => void;
 }
@@ -750,7 +840,7 @@ function err(code: ProviderErrorCode, message: string, retryable = false): Provi
 }
 
 export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): ProviderAdapter {
-  const sandboxDir = path.join(opts.baseDir ?? defaultBaseDir(), 'tmp', 'cli-sandbox');
+  const sandboxDir = opts.sandboxDir ?? defaultSandboxDir();
   const override = opts.spawnOverride;
 
   /** Command + leading args to run, or an issue. */
@@ -771,13 +861,15 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
       if ('issue' in cmd) issues.push(cmd.issue);
       const auth = buildChildEnv(cfg, process.env, {});
       if (auth.issue) issues.push(auth.issue);
-      if (cfg.model !== undefined && cfg.model !== '' && !isValidCliModel(cfg.model)) {
-        issues.push('Model must be an alias like "haiku" or a model id (letters, digits, . _ : - [ ])');
+      // Blocking: an invalid model name would only be refused at the first decision (after Start).
+      const modelOk = cfg.model === undefined || cfg.model === '' || isValidCliModel(cfg.model);
+      if (!modelOk) {
+        issues.push('Model name is not valid: use an alias like "haiku" or a model id (letters, digits, . _ : - [ ]; it may not start with "-")');
       }
       if (boundaryDisabled) {
         issues.push(`Disabled for this server run: ${boundaryDisabled.reason} (${boundaryDisabled.at}). Restart the server after fixing the CLI configuration.`);
       }
-      const configured = !('issue' in cmd) && auth.issue === null;
+      const configured = !('issue' in cmd) && auth.issue === null && modelOk;
       return { configured, enabled: configured && boundaryDisabled === null, issues };
     },
 
@@ -788,9 +880,13 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
       if (boundaryDisabled) {
         return { ok: false, testedAt, latencyMs: null, message: `Disabled for this server run: ${boundaryDisabled.reason}` };
       }
+      // The SAME environment decide() builds (subscription login, or the API key when subscription
+      // auth is off), so the test reports the auth that real calls will use.
+      const { env, issue: authIssue } = buildChildEnv(cfg, process.env, override?.env ?? {});
+      if (authIssue) return { ok: false, testedAt, latencyMs: null, message: authIssue };
+      const apiKeyMode = cfg.useSubscriptionAuth === false;
       const sandboxIssue = prepareSandbox(sandboxDir);
       if (sandboxIssue) return { ok: false, testedAt, latencyMs: null, message: sandboxIssue };
-      const { env } = buildChildEnv({ ...cfg, useSubscriptionAuth: true }, process.env, override?.env ?? {});
 
       let stdout = '';
       const started = Date.now();
@@ -814,8 +910,8 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
       if (run.exitCode !== 0 || !version) {
         return { ok: false, testedAt, latencyMs, message: `claude --version failed (exit ${run.exitCode ?? 'none'}): ${shortText(run.stderrTail || stdout)}` };
       }
-      // Login check via the supported `claude auth status --json` (no prompt, no usage). Only the
-      // login state, method and plan are kept — never the e-mail address or organisation.
+      // Auth check via the supported `claude auth status --json` (no prompt, no usage). Only the
+      // login state, method, plan and key source are kept — never the e-mail address or organisation.
       let authOut = '';
       const auth = await runChild({
         command: cmd.command,
@@ -843,6 +939,27 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
           latencyMs: totalMs,
           version,
           message: `Claude Code CLI ${version} found, but "claude auth status" did not return JSON (exit ${auth.exitCode ?? 'none'}); login could not be verified.`,
+        };
+      }
+      if (apiKeyMode) {
+        // Live 2.1.280 with ANTHROPIC_API_KEY set: { loggedIn: true, apiKeySource: "ANTHROPIC_API_KEY",
+        // subscriptionType: null, … } — reported even for an invalid key, so the key itself is unverified.
+        const keySource = typeof status.apiKeySource === 'string' ? status.apiKeySource : null;
+        if (keySource === null) {
+          return {
+            ok: false,
+            testedAt,
+            latencyMs: totalMs,
+            version,
+            message: `Claude Code CLI ${version} found, but with subscription auth off it does not report using the API key ("claude auth status" shows no apiKeySource).`,
+          };
+        }
+        return {
+          ok: true,
+          testedAt,
+          latencyMs: totalMs,
+          version,
+          message: `Connected: Claude Code CLI ${version} (${cmd.source}), API-key auth (key source ${shortText(keySource, 60)}; subscription login not used). Checked with "claude auth status", which does not validate the key; no prompt was sent and no usage was incurred.`,
         };
       }
       if (status.loggedIn !== true) {
@@ -893,10 +1010,11 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
       // One maintained Claude Code conversation per Luck session (supported --session-id / --resume).
       let conv = req.conversationKey ? conversations.get(req.conversationKey) : undefined;
       if (req.conversationKey && !conv) {
-        conv = { cliSessionId: randomUUID(), turns: 0 };
+        conv = { cliSessionId: randomUUID(), turns: 0, totals: ZERO_TOTALS, unreportedAttempt: false };
         conversations.set(req.conversationKey, conv);
       }
       const resume = conv !== undefined && conv.turns > 0;
+      const turnNumber = (conv?.turns ?? 0) + 1;
       const stdinText = conv && !resume ? `${CLI_SESSION_OPENING}\n${req.userPrompt}` : req.userPrompt;
       const args = [
         ...cmd.prefix,
@@ -943,11 +1061,30 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
       });
       const latencyMs = Date.now() - started;
 
+      const r = st.result;
+      // total_cost_usd / duration_api_ms / modelUsage are running totals for a resumed conversation:
+      // only this run's increase is this turn's cost and API time (result.usage is already per turn).
+      const totals = r ? readTotals(r) : null;
+      // Totals before this run: zero for a stateless run or a newly opened conversation; otherwise the
+      // conversation's last known totals (read now, after the run, so an overlapping attempt counts once).
+      const before: CliTotals = conv && resume ? conv.totals : ZERO_TOTALS;
+      const none: Increase = { value: null, problem: null };
+      const cost = totals ? increase(totals.costUsd, before.costUsd, 'cost') : none;
+      const api = totals ? increase(totals.apiMs, before.apiMs, 'API time') : none;
+      const hadUnreportedAttempt = conv?.unreportedAttempt === true;
+
       // Advance the conversation only when the CLI produced a result for this turn. If the very first
       // turn produced nothing, forget the id so the next attempt opens a fresh conversation.
       if (conv && req.conversationKey) {
-        if (st.result) conv.turns += 1;
-        else if (conv.turns === 0) conversations.delete(req.conversationKey);
+        if (r && totals) {
+          conv.turns += 1;
+          conv.totals = nextTotals(before, totals, isErrorResult(r));
+          conv.unreportedAttempt = false;
+        } else if (conv.turns === 0) {
+          conversations.delete(req.conversationKey);
+        } else {
+          conv.unreportedAttempt = true;
+        }
       }
 
       // ── facts gathered regardless of outcome ──
@@ -955,12 +1092,11 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
         st.rateLimits.size > 0
           ? { source: 'cli-rate-limit-event', capturedAt: st.rateLimitCapturedAt ?? new Date().toISOString(), entries: [...st.rateLimits.values()] }
           : null;
-      const r = st.result;
       const usage = r ? mapUsage(asRecord(r.usage) ?? undefined) : UNKNOWN_USAGE;
-      const providerCostUsd = r ? finiteNumber(r.total_cost_usd) : null;
-      const modelUsageKeys = r && asRecord(r.modelUsage) ? Object.keys(asRecord(r.modelUsage)!) : [];
-      const modelReported = modelUsageKeys[0] ?? st.assistantModel ?? st.initModel;
-      const apiMs = r ? finiteNumber(r.duration_api_ms) : null;
+      const providerCostUsd = cost.value;
+      const modelUsageKeys = totals ? Object.keys(totals.modelOutput) : [];
+      const modelReported = (totals ? modelOfThisRun(totals, before) : null) ?? st.assistantModel ?? modelUsageKeys[0] ?? st.initModel;
+      const apiMs = api.value;
       const facts = {
         usage,
         latencyMs,
@@ -971,10 +1107,20 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
         rateLimit,
       };
       const noteParts: string[] = [];
-      if (conv) noteParts.push(`conversation ${conv.cliSessionId.slice(0, 8)} turn ${resume ? conv.turns : 1}${resume ? ' (resumed)' : ' (opened)'}`);
+      if (conv) noteParts.push(`conversation ${conv.cliSessionId.slice(0, 8)} turn ${turnNumber}${resume ? ' (resumed)' : ' (opened)'}`);
       if (r && finiteNumber(r.num_turns) !== null) noteParts.push(`CLI turns: ${r.num_turns}`);
       if (apiMs !== null) noteParts.push(`API time ${apiMs} ms (includes time to first token)`);
       if (providerCostUsd !== null) noteParts.push("cost is the CLI's own estimate, not billing");
+      if (resume && (cost.value !== null || api.value !== null)) {
+        const total = totals?.costUsd;
+        noteParts.push(
+          `cost and API time are this turn's increase of the CLI's running conversation totals${typeof total === 'number' ? ` (conversation total so far $${Number(total.toFixed(6))})` : ''}`,
+        );
+      }
+      for (const problem of [cost.problem, api.problem]) if (problem) noteParts.push(problem);
+      if (resume && hadUnreportedAttempt && r) {
+        noteParts.push('an earlier attempt in this conversation ended without a result; any cost the CLI recorded for it is included in this increase');
+      }
       if (st.apiRetries > 0) noteParts.push(`CLI retried the API ${st.apiRetries}×`);
       const note = noteParts.length ? noteParts.join('; ') : undefined;
 
@@ -998,7 +1144,7 @@ export function createClaudeCliAdapter(opts: ClaudeCliAdapterOptions = {}): Prov
       if (run.spawnError && !r) return failure(err('unavailable', `Could not start the Claude Code CLI: ${shortText(run.spawnError)}`), facts);
 
       if (r) {
-        const isError = r.is_error === true || (typeof r.subtype === 'string' && r.subtype !== 'success');
+        const isError = isErrorResult(r);
         if (isError) {
           const errorsText = Array.isArray(r.errors) ? r.errors.map((e) => (typeof e === 'string' ? e : JSON.stringify(e))).join('; ') : '';
           const text = [typeof r.result === 'string' ? r.result : '', errorsText].filter(Boolean).join(' — ') || run.stderrTail;

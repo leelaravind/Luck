@@ -44,12 +44,16 @@ import type { DecisionRequest, ProviderAdapter, ProviderCallResult, ResolvedProv
 import { asCount, asRecord, httpJson, isLoopbackHost, joinUrl, providerError, safeText, validateBaseUrl } from './httpUtil.js';
 
 /** laya-serve's documented default port; the app binds it to loopback via LAYA_HOST=127.0.0.1. */
-export const LAYA_DEFAULT_BASE_URL = 'http://127.0.0.1:8000';
+const LAYA_DEFAULT_BASE_URL = 'http://127.0.0.1:8000';
 const CHECKPOINT_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const HEALTH_TIMEOUT_MS = 10_000;
 const LABEL = 'Laya';
 
-export const LAYA_INSTRUCTIONS = 'Choose the next action in a virtual European roulette game. Outcomes are random.';
+/**
+ * Task instruction sent with every request. Model-facing text states the task only: no house-edge,
+ * randomness or predictability commentary (user request; the state text follows the same rule).
+ */
+export const LAYA_INSTRUCTIONS = 'Choose the next action in a virtual European roulette game.';
 
 /**
  * The fixed label set Laya chooses from (13 ≤ 20 labels). Each value is the criterion text Laya

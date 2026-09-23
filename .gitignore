@@ -12,6 +12,12 @@ data/
 *.db-shm
 *.sqlite
 *.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
 
 # secrets & local configuration
 .env
@@ -19,6 +25,13 @@ data/
 !.env.example
 *.pem
 *.key
+*.p12
+*.pfx
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+.npmrc
 credentials*.json
 client_secret*.json
 
@@ -31,11 +44,16 @@ tmp/
 
 # optional Laya / Python environment and model weights
 .venv*/
+venv/
 __pycache__/
 *.safetensors
 *.onnx
 *.bin
 *.gguf
+*.pt
+*.pth
+*.ckpt
+*.h5
 
 # editor / OS
 .DS_Store

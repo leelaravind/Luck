@@ -3,9 +3,15 @@
 This page covers the three HTTP providers. The Claude Code CLI and Laya adapters are described in
 [providers-cli-laya.md](providers-cli-laya.md).
 
-All AI players make **virtual** bets with credits that have no real-world value. A model sees only
-the `GameObservation` (balance, limits, bet types and settled history). It never sees RNG state,
-upcoming outcomes, database rows or secrets.
+All AI players make **virtual** bets with credits that have no real-world value. With the three HTTP
+providers on this page a model sees only Luck's system prompt and the `GameObservation` (balance, limits,
+bet types and settled history) — nothing else is sent. It never sees RNG state, upcoming outcomes, database
+rows or secrets.
+
+The **Claude Code CLI** is different: the CLI adds context of its own to every conversation (working
+directory, OS/shell details and, with a claude.ai subscription login, your account e-mail), so that model
+sees the game observation **plus** that CLI-added context. See
+[providers-cli-laya.md](providers-cli-laya.md#what-the-model-sees).
 
 ## How every adapter behaves
 
@@ -203,6 +209,7 @@ tests point the official SDK at such a server:
 npx vitest run src/shared/decision.test.ts src/server/providers/httpUtil.test.ts src/server/providers/ollama.test.ts src/server/providers/anthropic.test.ts src/server/providers/openai.test.ts src/server/providers/pricing.test.ts
 ```
 
-No live provider was called during development. Ollama was not installed and no API keys were set on
-the build machine, so live behaviour against real Ollama, Anthropic and OpenAI endpoints is
-**untested**.
+None of the three providers on this page was called live during development. Ollama was not installed and
+no API keys were set on the build machine, so live behaviour against real Ollama, Anthropic and OpenAI
+endpoints is **untested**. (The Claude Code CLI and Laya players were tested live — see
+[providers-cli-laya.md](providers-cli-laya.md) and [verification.md](verification.md).)

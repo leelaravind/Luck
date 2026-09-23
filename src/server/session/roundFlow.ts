@@ -95,14 +95,14 @@ export function settleStoredRound(deps: RoundFlowDeps, round: RoundRecord): Roun
 }
 
 /** Settlement for stored round bets. A no-bet round settles to all zeros. */
-export function computeSettlement(bets: readonly RoundBet[], winningNumber: number): Settlement {
+function computeSettlement(bets: readonly RoundBet[], winningNumber: number): Settlement {
   if (bets.length === 0) {
     return { winningNumber, totalStake: 0, stakeReturned: 0, winnings: 0, totalReturned: 0, net: 0, bets: [] };
   }
   return settleBets(roundBetsToResolved(bets), winningNumber);
 }
 
-export function roundBetsToResolved(bets: readonly RoundBet[]): ResolvedBet[] {
+function roundBetsToResolved(bets: readonly RoundBet[]): ResolvedBet[] {
   return bets.map((b) => {
     const r: ResolvedBet = { key: b.key, type: b.type, numbers: [...b.numbers], stake: b.stake, payout: b.payout, label: b.label };
     if (b.index !== undefined && b.index !== null) r.index = b.index;

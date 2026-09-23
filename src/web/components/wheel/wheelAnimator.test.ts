@@ -159,6 +159,20 @@ describe('WheelAnimator', () => {
     expect(h.landed()).toBe(10);
   });
 
+  it('instant speed: ball placed at once (no rand, no watchdog), settle from the next-tick timer', () => {
+    const h = makeHarness();
+    h.animator.spin('inst', 26, 'instant');
+    expect(h.randCalls).toBe(0); // no trajectory is planned at all
+    expect(h.landed()).toBe(26); // already in the pocket before any frame or timer ran
+    expect(h.root.getAttribute('data-spin-stage')).toBe('settled');
+    expect(h.settled).toEqual([]);
+    expect(h.timers.size).toBe(1); // only the next-tick settle, no watchdog
+    h.advance(1, false, 1);
+    expect(h.settled).toEqual(['inst']);
+    expect(h.statuses.at(-1)).toEqual({ kind: 'settled', number: 26 });
+    expect(h.timers.size).toBe(0);
+  });
+
   it('parses the transforms it writes', () => {
     expect(parseRotate('rotate(123.456)')).toBe(123.456);
     expect(parseRotate('rotate(-5e-3)')).toBe(-0.005);

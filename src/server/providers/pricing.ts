@@ -63,21 +63,27 @@ export const DEFAULT_PRICING: Record<string, Pricing> = Object.freeze({
   'anthropic:claude-sonnet-4-6': claude(3, 15),
 }) as Record<string, Pricing>;
 
-export function pricingKey(kind: AiProviderKind, model: string): string {
+/** Key of a pricing entry: `${kind}:${model}` (same key format as AppSettings.pricing). */
+function pricingKey(kind: AiProviderKind, model: string): string {
   return `${kind}:${model}`;
 }
 
-/** User pricing wins over the default assumption. */
+/**
+ * THE pricing lookup used for budgets and cost estimates (runner preflight, AI decisions, usage
+ * summaries): an explicit pricing on the player wins, then the settings map (user entries merged
+ * over the defaults by loadSettings), then the built-in default assumption. null = no pricing
+ * (also when no model is known: a price is always per model).
+ */
 export function resolvePricing(
   kind: AiProviderKind,
   model: string | null | undefined,
-  userPricing?: Record<string, Pricing>,
+  settingsPricing?: Readonly<Record<string, Pricing>>,
   explicit?: Pricing,
-): Pricing | undefined {
+): Pricing | null {
   if (explicit) return explicit;
-  if (!model) return undefined;
+  if (!model) return null;
   const key = pricingKey(kind, model);
-  return userPricing?.[key] ?? DEFAULT_PRICING[key];
+  return settingsPricing?.[key] ?? DEFAULT_PRICING[key] ?? null;
 }
 
 /** Integer micro-USD, rounded UP; tiny float noise (e.g. 7.0000000001) does not add a micro-dollar. */
@@ -94,7 +100,7 @@ function validCount(n: number | null): n is number {
  * pricing is available. A price of $X per MTok is exactly X micro-USD per token.
  * Missing cache rates fall back conservatively: read → input rate, write → 1.25 × input rate.
  */
-export function estimateCostMicros(usage: UsageNumbers, pricing: Pricing | undefined): UsdMicros | null {
+export function estimateCostMicros(usage: UsageNumbers, pricing: Pricing | null | undefined): UsdMicros | null {
   if (!pricing || !usage.known) return null;
   // An attempt with input or output unreported cannot be estimated honestly.
   if (!validCount(usage.inputTokens) || !validCount(usage.outputTokens)) return null;
@@ -120,7 +126,7 @@ export function estimateCostMicros(usage: UsageNumbers, pricing: Pricing | undef
 export function worstCaseCostMicros(
   inputTokensEstimate: number,
   maxOutputTokens: number,
-  pricing: Pricing | undefined,
+  pricing: Pricing | null | undefined,
 ): UsdMicros | null {
   if (!pricing) return null;
   if (!Number.isFinite(inputTokensEstimate) || inputTokensEstimate < 0) return null;

@@ -32,7 +32,9 @@ function mulberry32(seed: number): () => number {
 }
 
 const ALL_NUMBERS = Array.from({ length: 37 }, (_, n) => n);
-const DURATIONS = [SPIN_DURATION_MS.normal, SPIN_DURATION_MS.fast, SPIN_DURATION_MS.instant];
+// Animated durations. "instant" is 0 (no spin, covered by the durationMs: 0 tests); a short 400 ms spin
+// keeps the short-duration branch of planSpin covered.
+const DURATIONS = [SPIN_DURATION_MS.normal, SPIN_DURATION_MS.fast, 400];
 
 function expectLandsOn(plan: SpinPlan, n: number) {
   const end = sampleSpin(plan, plan.durationMs);

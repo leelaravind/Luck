@@ -10,6 +10,8 @@
  * - `spin(roundId, …)` for a roundId already seen by this animator is ignored.
  * - A new spin while one is running first snaps the running one to its end and settles it.
  * - Reduced motion: nothing turns; the ball is placed in the pocket and the settle fires on the next tick.
+ * - "instant" speed (duration 0): same as reduced motion for the spin itself — no spin, the ball is placed
+ *   in the pocket at once and the settle fires on the next tick — but the idle rotor drift keeps running.
  * - Hidden document (background tab): a spin settles immediately instead of waiting on rAF.
  * - After `destroy()` no callback of any kind is invoked.
  */
@@ -144,24 +146,25 @@ export class WheelAnimator {
     this.lastSpinInvalid = false;
 
     const start = nextSpinStart(this.frame(now));
-    const plan = this.reduced
-      ? planSpin(start, winningNumber, { durationMs: 0, idleDegPerSec: 0 })
-      : planSpin(start, winningNumber, {
-          durationMs: SPIN_DURATION_MS[speed] ?? SPIN_DURATION_MS.normal,
-          rand: this.env.rand,
-        });
+    const durationMs = this.reduced ? 0 : (SPIN_DURATION_MS[speed] ?? SPIN_DURATION_MS.normal);
+    const plan =
+      durationMs === 0
+        ? planSpin(start, winningNumber, { durationMs: 0, idleDegPerSec: this.reduced ? 0 : IDLE_DEG_PER_SEC })
+        : planSpin(start, winningNumber, { durationMs, rand: this.env.rand });
     const entry: ActiveSpin = { roundId, plan, startedAt: now, settled: false };
     this.active = entry;
     this.setHighlight(null);
     this.callbacks.onStatus({ kind: 'spinning' });
 
-    if (this.reduced) {
-      // Ball goes straight into the pocket; settle on the next tick (no rAF involved).
+    if (durationMs === 0) {
+      // Reduced motion or "instant": the ball goes straight into the pocket in this frame; the settle
+      // (and with it the reveal of the result) follows on the next tick, never before the ball is placed.
       this.render(now);
       this.timer = this.env.setTimer(() => {
         this.timer = null;
         if (!this.destroyed && this.active === entry && !entry.settled) this.settle(entry, this.env.now());
       }, 0);
+      this.ensureLoop();
       return;
     }
     if (this.env.isHidden()) {

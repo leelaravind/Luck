@@ -719,6 +719,27 @@ describe('validateBetSlip', () => {
     expectGameError(() => validateBetSlip([bet({ type: 'red' }, 10)], { balance: 0, limits: LIMITS }), 'insufficient_funds');
   });
 
+  it('refuses a slip whose best possible return plus the remaining balance would exceed the safe integer range', () => {
+    const open: SessionLimits = { ...DEFAULT_LIMITS, minStake: 10, stakeIncrement: 10, maxStakePerBet: null, maxStakePerRound: null, maxBetsPerRound: null };
+    // Balance ~9e15 (the audit's 1e11 start after three all-in straight-up wins is ~4.7e15).
+    const balance = 9_000_000_000_000_000 - (9_000_000_000_000_000 % 10);
+    expect(Number.isSafeInteger(balance)).toBe(true);
+    // All-in on red: a win would return 2 × balance > MAX_SAFE_INTEGER.
+    const ge = expectGameError(() => validateBetSlip([{ type: 'red', stake: balance }], { balance, limits: open }), 'limit_exceeded', /could return up to .* would exceed the largest balance/);
+    expect(ge.details).toMatchObject({ actual: balance * 2 });
+    // A straight-up bet much smaller than the balance can still overflow: 36 × stake + (balance − stake).
+    const stake = 100_000_000_000_000; // 36 × 1e14 = 3.6e15 on top of ~8.9e15 remaining
+    expectGameError(() => validateBetSlip([{ type: 'straight', numbers: [7], stake }], { balance, limits: open }), 'limit_exceeded', /Lower the stakes/);
+    // The best single number counts, not the sum of all bets: red + black never both win.
+    const half = 1_000_000_000_000_000;
+    expect(validateBetSlip([{ type: 'red', stake: half }, { type: 'black', stake: half }], { balance: 4 * half, limits: open })).toHaveLength(2);
+    // Exactly at the limit is fine: (balance − stake) + 2 × stake === MAX_SAFE_INTEGER.
+    const exact = { balance: 6_000_000_000_000_000, limits: { ...open, minStake: 1, stakeIncrement: 1 } };
+    const atLimit = Number.MAX_SAFE_INTEGER - exact.balance; // 3 007 199 254 740 991
+    expect(validateBetSlip([{ type: 'even', stake: atLimit }], exact)).toHaveLength(1);
+    expectGameError(() => validateBetSlip([{ type: 'even', stake: atLimit + 1 }], exact), 'limit_exceeded');
+  });
+
   it('refuses to run with nonsensical limits', () => {
     expectGameError(() => validateBetSlip([bet({ type: 'red' }, 10)], { balance: 100, limits: { ...LIMITS, stakeIncrement: 0 } }), 'internal');
     expectGameError(() => validateBetSlip([bet({ type: 'red' }, 10)], { balance: 1.5, limits: LIMITS }), 'internal');

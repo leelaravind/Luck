@@ -14,12 +14,14 @@ a probability for each label and the top label. It:
 - is **not a roulette model** and **cannot predict outcomes** — spins are independent and random;
 - runs **locally** (CPU or CUDA), so there is **no cloud inference charge**.
 
-How the app uses it: Laya chooses exactly one of
-`skip, red, black, odd, even, low, high, dozen_1, dozen_2, dozen_3, column_1, column_2, column_3, stop`.
+How the app uses it: Laya chooses exactly one of these **13 labels**
+`skip, red, black, odd, even, low, high, dozen_1, dozen_2, dozen_3, column_1, column_2, column_3`.
+There is no `stop` label — a classifier cannot end the session; you and the session limits do.
 The **app's adapter** turns a bet label into a single bet whose **stake is fixed at the session minimum**
 — Laya only picks the category. Every decision's explanation says so, e.g.
 `Laya classifier chose 'red' (p=0.31). Stake fixed at the session minimum by the adapter.`
-A label outside that list is rejected as invalid output; it is never turned into some other bet.
+A label outside that list (including a returned `stop`) is rejected as invalid output; it is never turned into a
+stop or into some other bet.
 
 ## Install (separate Python environment)
 
@@ -83,5 +85,7 @@ In the app's `.env` (see `docs/configuration.md`):
 - Usage shows **input tokens only** (as reported by `laya-serve`); output tokens are not applicable.
 - Cost shows **"local — no cloud charge"**. Your own electricity/hardware cost is not measured.
 - Probabilities are Laya's confidence in a *label given the text*, not a probability of winning.
-- The adapter in this repo was tested against a **mock** `laya-serve` (fixture), not a real Laya
-  installation. See `docs/providers-cli-laya.md`.
+- **Tested live** on 2026-09-23 (Windows 11, CPU, `laya[serve]==0.3.7`, checkpoint `english`, `laya-serve` on
+  127.0.0.1:8000): *Test connection* and a 3-round session through the app (skip, red, red), decisions validated
+  and settled, about 1.9 s per decision. The automated tests use a **mock** `laya-serve` (fixture). Details:
+  `docs/providers-cli-laya.md` and `docs/verification.md`.

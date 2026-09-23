@@ -82,6 +82,8 @@ describe('Ollama adapter (FIXTURE: local mock HTTP server, no real Ollama)', () 
     expect(sent.json).toEqual({
       model: 'llama3.2:3b',
       stream: false,
+      // Ollama's documented switch: reasoning models must not spend the token cap on a hidden trace.
+      think: false,
       format: PLAYER_DECISION_JSON_SCHEMA,
       messages: [
         { role: 'system', content: 'SYSTEM: reply with one JSON object' },
@@ -122,7 +124,21 @@ describe('Ollama adapter (FIXTURE: local mock HTTP server, no real Ollama)', () 
     server = await startMockServer(() => chat('<think>hmm</think>\n```json\n{"action":"skip"}\n```'));
     const r = await adapter.decide(request(), cfg(), neverAborted());
     expect(r.ok).toBe(true);
+    expect(server.requests[0]!.json.think).toBe(false);
+    // The adapter keeps the raw text; the session layer strips <think> blocks before storing it.
+    expect(r.text).toBe('<think>hmm</think>\n```json\n{"action":"skip"}\n```');
     expect(parseDecision(r)).toEqual({ ok: true, decision: { action: 'skip' } });
+  });
+
+  it('decide(): think:false is sent on every /api/chat request; a separate message.thinking is never used as output', async () => {
+    server = await startMockServer(() => ({
+      body: { ...(chat('{"action":"skip"}').body as Record<string, unknown>), message: { role: 'assistant', content: '{"action":"skip"}', thinking: 'hidden trace' } },
+    }));
+    const r = await adapter.decide(request({ model: undefined }), { ...cfg(), model: 'qwen3:4b' }, neverAborted());
+    expect(server.requests[0]!.json).toMatchObject({ model: 'qwen3:4b', think: false, stream: false });
+    expect(r.ok).toBe(true);
+    expect(r.text).toBe('{"action":"skip"}');
+    expect(r.text).not.toContain('hidden trace');
   });
 
   it('decide(): malformed JSON and extra keys come back as text and are rejected by parseDecision', async () => {

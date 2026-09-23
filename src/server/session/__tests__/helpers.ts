@@ -7,7 +7,7 @@
  */
 import type {
   AiProviderKind,
-  AnimationSpeed,
+  AppSettings,
   BetInput,
   PlayerDecision,
   ProviderCapabilities,
@@ -226,7 +226,8 @@ export function makeHarness(opts: {
   repo?: Repository;
   outcomeSource?: OutcomeSource & { calls: number };
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
-  presentationDelayMs?: (speed: AnimationSpeed) => number;
+  /** Wait between autonomous rounds; default 0 (instant tests). Pass defaultRoundPacingMs for the real rule. */
+  presentationDelayMs?: (settings: AppSettings) => number;
 } = {}): Harness {
   const clock = {
     t: Date.parse('2026-09-23T12:00:00.000Z'),

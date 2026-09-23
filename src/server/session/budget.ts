@@ -18,7 +18,7 @@ import { worstCaseCostMicros } from '../providers/pricing.js';
 /** Floor for a CLI call's worst case when no pricing assumption and no history exist ($0.05). */
 export const CLI_MIN_WORST_CASE_MICROS = 50_000;
 /** Conservative characters-per-token ratio for the input estimate (real text is usually ~4). */
-export const CHARS_PER_TOKEN_ESTIMATE = 3;
+const CHARS_PER_TOKEN_ESTIMATE = 3;
 
 /** Attempts that may have been billed even though no cost was reported. */
 // Only 'rate_limited' is excluded: a 429 is rejected before any work is done. 'error' is included on
@@ -30,7 +30,7 @@ export function estimateInputTokens(promptChars: number): number {
 }
 
 /** Worst-case cost of ONE attempt, or null when it cannot be bounded (no pricing, provider reports no cost). */
-export function worstCaseAttemptMicros(input: {
+function worstCaseAttemptMicros(input: {
   capabilities: Pick<ProviderCapabilities, 'kind' | 'reportsCost'>;
   pricing: Pricing | null;
   promptChars: number;

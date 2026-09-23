@@ -20,7 +20,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
-        node: ['22.x', '24.x']
+        # Latest 22 and 24, plus the exact minimum versions from package.json "engines"
+        # (^22.22.2 || >=24.15.0), so the oldest supported releases are really tested.
+        node: ['22.22.2', '22.x', '24.15.0', '24.x']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -31,6 +33,19 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  dependency-audit:
+    name: dependency audit (production dependencies)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+      - run: npm ci
+      # Fails on any high or critical advisory in what the app ships (devDependencies excluded).
+      - run: npm audit --omit=dev --audit-level=high
 
   secret-scan:
     name: secret-scan (gitleaks, full history)

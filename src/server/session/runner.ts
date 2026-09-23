@@ -10,27 +10,36 @@
  *
  * One loop iteration:
  *   check limits (BEFORE any request) → phase requesting_decision → exactly one decision
- *   → bet/skip: synchronous round flow (commit → draw → settle) → presentation wait
- *   → honour pause_requested / step / stop.
- * The presentation wait depends on the animation speed, which therefore only changes the time
- * between rounds — never the number of model calls (always exactly one decision per round).
+ *   → bet/skip: synchronous round flow (commit → draw → settle) → round pacing wait
+ *   → honour pause_requested / step / stop (a session that reached a limit completes instead of
+ *     pausing).
+ * The wait between rounds is settings.roundPacingMs (default 7 s). It does NOT depend on the
+ * animation speed, which is presentation only: the animation can never make models be called more
+ * often. There is always exactly one decision per round.
+ *
+ * Failed decisions: with maxConsecutiveFailures > 1 the runner keeps going after a failed decision,
+ * but first waits the provider's Retry-After (or a bounded backoff; abortable by Stop). Only the
+ * failure that reaches the limit pauses the session, and only that one says so.
  *
  * Stop: aborts an in-flight request (decision 'cancelled'; a late answer is recorded as stale and
  * never applied) or the presentation wait. A round whose bets were committed always settles
  * first (the round flow is synchronous), and no further round starts.
  */
 import { GameError, type PauseReason, type SessionEndReason, type SessionInfo } from '../../shared/contracts.js';
+import { formatCredits } from '../../shared/money.js';
 import { redact } from '../redact.js';
 import { resolveProviderConfig, serverGate } from '../providers/registry.js';
-import { requestAiDecision, demoDecision, resolvePricing, type DecisionOutcome } from './aiDecision.js';
+import { requestAiDecision, demoDecision, sessionPricing, type DecisionOutcome } from './aiDecision.js';
 import { idlePhase, type SessionCore } from './core.js';
 import { playRound, settleStoredRound } from './roundFlow.js';
-import { waitAbortable, yieldToEventLoop } from './retry.js';
+import { computeBackoffMs, waitAbortable, yieldToEventLoop } from './retry.js';
 
 /** Kinds whose adapters need an explicit model to run. */
 const MODEL_REQUIRED = new Set(['ollama', 'anthropic', 'openai']);
 /** How long control('stop') waits for the runner to wind down before returning. */
-export const STOP_WAIT_MS = 10_000;
+const STOP_WAIT_MS = 10_000;
+/** Appended to the message of a failed decision when (and only when) the session really pauses. */
+export const PAUSED_AFTER_FAILURE = 'Session paused — press Start to try again.';
 
 interface RunnerHandle {
   readonly sessionId: string;
@@ -90,7 +99,7 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
     // With no app spending limit (budgetMicros null — the user's explicit choice) nothing needs to be
     // bounded, so a paid provider may start without a pricing assumption.
     if (adapter.capabilities.paid && s.limits.budgetMicros !== null) {
-      const pricing = resolvePricing(core, kind, s.player, cfg.model);
+      const pricing = sessionPricing(core, kind, s.player, cfg.model);
       if (!pricing && !adapter.capabilities.reportsCost) {
         throw new GameError(
           'invalid_state',
@@ -149,8 +158,13 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
     core.log(h.sessionId, 'info', 'session_completed', message);
   }
 
-  /** Honour a pending control request at a round boundary. Returns true when the loop must exit. */
-  function atBoundary(h: RunnerHandle, s: SessionInfo): boolean {
+  /**
+   * Honour a pending control request at a round boundary. `stepDone`: the single round of a Step
+   * has been played. Before pausing (Pause after round / Next round), the limits are checked: a
+   * session that cannot continue completes instead of showing "paused". Returns true when the loop
+   * must exit.
+   */
+  function atBoundary(h: RunnerHandle, s: SessionInfo, stepDone: boolean): boolean {
     if (s.status === 'stop_requested') {
       finishStopped(h);
       return true;
@@ -159,8 +173,11 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
       finishPaused(h, 'server_restart', 'Server shut down during the session. Press Start to resume.');
       return true;
     }
-    if (s.status === 'pause_requested') {
-      finishPaused(h, 'user_pause', 'Paused after the round, as requested.');
+    if (s.status === 'pause_requested' || (s.status === 'running' && stepDone)) {
+      const limit = limitReached(s);
+      if (limit) finishCompleted(h, limit.reason, limit.message);
+      else if (s.status === 'pause_requested') finishPaused(h, 'user_pause', 'Paused after the round, as requested.');
+      else finishPaused(h, 'step_complete', 'Step complete: one round was played.');
       return true;
     }
     if (s.status !== 'running') {
@@ -179,7 +196,10 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
       return { reason: 'max_runtime', message: `Completed: reached the runtime limit of ${l.maxRuntimeSec} s.` };
     }
     if (s.balance < l.minStake) {
-      return { reason: 'insufficient_balance', message: `Completed: balance ${s.balance} is below the minimum stake of ${l.minStake} subunits.` };
+      return {
+        reason: 'insufficient_balance',
+        message: `Completed: balance ${formatCredits(s.balance)} is below the minimum stake of ${formatCredits(l.minStake)}.`,
+      };
     }
     return null;
   }
@@ -192,7 +212,7 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
       for (;;) {
         await yieldToEventLoop();
         let s = flushRuntime(h);
-        if (atBoundary(h, s)) return;
+        if (atBoundary(h, s, false)) return;
 
         const limit = limitReached(s);
         if (limit) return finishCompleted(h, limit.reason, limit.message);
@@ -227,13 +247,19 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
             // of consecutive failed decisions is reached (default 1 = pause after the first one).
             h.consecutiveFailures += 1;
             const allowed = Math.max(1, s.limits.maxConsecutiveFailures);
-            if (h.consecutiveFailures >= allowed) return finishPaused(h, outcome.pauseReason, outcome.message);
+            if (h.consecutiveFailures >= allowed) return finishPaused(h, outcome.pauseReason, `${outcome.message} ${PAUSED_AFTER_FAILURE}`);
+            // Keep going, but not straight away: honour the provider's Retry-After (capped), else back
+            // off 1 s, 2 s, 4 s… The wait is abortable by Stop / shutdown (handled at the loop top).
+            const delay = computeBackoffMs(h.consecutiveFailures, outcome.retryAfterMs !== null ? { retryAfterMs: outcome.retryAfterMs } : null);
             core.log(
               id,
               'warn',
               'decision_failed',
-              `${outcome.message} (failed decision ${h.consecutiveFailures} of ${allowed} allowed in a row; no round was played)`,
+              `${outcome.message} (failed decision ${h.consecutiveFailures} of ${allowed} allowed in a row; no round was played). ` +
+                `The session keeps running; next decision in ${formatWait(delay)}.`,
             );
+            core.updateSession(id, { phase: idlePhase(core.repo, id) });
+            await waitAbortable(core.sleep, delay, h.controller.signal);
             continue;
           }
           case 'stop':
@@ -261,11 +287,11 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
           }
         }
 
-        // Presentation wait so the wheel can finish; abortable by Stop / shutdown (never by Pause).
-        await waitAbortable(core.sleep, core.presentationDelayMs(core.settings().animationSpeed), h.controller.signal);
+        // Round pacing (settings.roundPacingMs, independent of the animation speed); abortable by
+        // Stop / shutdown (never by Pause).
+        await waitAbortable(core.sleep, core.presentationDelayMs(core.settings()), h.controller.signal);
         s = flushRuntime(h);
-        if (atBoundary(h, s)) return;
-        if (h.stepOnce) return finishPaused(h, 'step_complete', 'Step complete: one round was played.');
+        if (atBoundary(h, s, h.stepOnce)) return;
       }
     } catch (err) {
       const message = redact(err instanceof Error ? err.message : String(err));
@@ -418,6 +444,11 @@ export function createRunnerManager(core: SessionCore): RunnerManager {
       return runners.size;
     },
   };
+}
+
+/** "750 ms" / "4.2 s" for log messages. */
+function formatWait(ms: number): string {
+  return ms < 1_000 ? `${Math.round(ms)} ms` : `${Math.round(ms / 100) / 10} s`;
 }
 
 /** Resolve when `p` settles or after `ms`, whichever comes first (never rejects). */

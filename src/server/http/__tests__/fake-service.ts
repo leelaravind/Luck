@@ -74,7 +74,7 @@ export function fixtureSnapshot(id = FIXTURE_SESSION_ID): SessionSnapshot {
 }
 
 export function fixtureSettings(): AppSettings {
-  return { defaultLimits: { ...DEFAULT_LIMITS }, animationSpeed: 'normal', reduceMotion: 'system', pricing: {}, players: {} };
+  return { defaultLimits: { ...DEFAULT_LIMITS }, animationSpeed: 'normal', roundPacingMs: 7_000, reduceMotion: 'system', pricing: {}, players: {} };
 }
 
 export interface FakeService extends GameService {

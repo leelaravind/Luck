@@ -13,7 +13,7 @@
 import type { ProviderError, ProviderErrorCode, RateLimitInfo } from '../../shared/contracts.js';
 import { redact } from '../redact.js';
 
-export const MAX_RESPONSE_BYTES = 1_000_000;
+const MAX_RESPONSE_BYTES = 1_000_000;
 /** Longest provider-supplied error text kept in a ProviderError message. */
 const MAX_ERROR_DETAIL_CHARS = 300;
 /** Retry-After values beyond this are treated as nonsense and ignored. */
@@ -46,7 +46,7 @@ export function providerError(
 }
 
 /** Pull a human message out of a provider error body ({error:{message}}, {error:"…"}, {message}, or text). */
-export function extractErrorDetail(bodyText: string | undefined | null): string {
+function extractErrorDetail(bodyText: string | undefined | null): string {
   if (!bodyText) return '';
   let detail = bodyText.trim();
   try {
@@ -70,7 +70,7 @@ export function extractErrorDetail(bodyText: string | undefined | null): string 
 // ───────────────────────────── headers ─────────────────────────────
 
 /** Minimal header accessor so both fetch Headers and plain records work. */
-export type HeaderSource = Headers | Record<string, string | string[] | undefined> | null | undefined;
+type HeaderSource = Headers | Record<string, string | string[] | undefined> | null | undefined;
 
 function headerEntries(h: HeaderSource): [string, string][] {
   if (!h) return [];
@@ -267,7 +267,7 @@ export function classifyHttpStatus(
 }
 
 /** Network-level failure (no HTTP response) → 'unavailable' (retryable) or 'unknown'. */
-export function classifyNetworkError(
+function classifyNetworkError(
   err: unknown,
   opts: { providerLabel: string; target: string; secrets?: readonly (string | undefined)[] },
 ): ProviderError {
@@ -378,7 +378,7 @@ export function abortError(kind: 'timeout' | 'cancelled', providerLabel: string,
 
 // ───────────────────────────── JSON over HTTP ─────────────────────────────
 
-export interface HttpJsonRequest {
+interface HttpJsonRequest {
   url: string;
   method?: 'GET' | 'POST';
   headers?: Record<string, string>;
@@ -393,7 +393,7 @@ export interface HttpJsonRequest {
   secrets?: readonly (string | undefined)[];
 }
 
-export type HttpJsonResult =
+type HttpJsonResult =
   | { ok: true; status: number; headers: Headers; text: string; json: unknown; latencyMs: number }
   | { ok: false; error: ProviderError; status: number | null; headers: Headers | null; text: string | null; latencyMs: number };
 

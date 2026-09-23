@@ -6,9 +6,9 @@ import type { ProviderError } from '../../shared/contracts.js';
 /** Upper bound for a provider-supplied Retry-After. */
 export const MAX_RETRY_AFTER_MS = 30_000;
 /** Exponential base delays for attempts 1, 2, 3+ when the provider gave no Retry-After. */
-export const BACKOFF_BASE_MS: readonly number[] = [1_000, 2_000, 4_000];
+const BACKOFF_BASE_MS: readonly number[] = [1_000, 2_000, 4_000];
 /** Jitter added on top of the base delay, as a fraction of it (0..25 %). */
-export const BACKOFF_JITTER_FRACTION = 0.25;
+const BACKOFF_JITTER_FRACTION = 0.25;
 
 /**
  * Delay before the next attempt after `failedAttempt` (1-based) failed.

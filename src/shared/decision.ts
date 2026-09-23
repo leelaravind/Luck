@@ -40,7 +40,7 @@ const BET_TYPE_PRESENT: Record<BetType, true> = {
 /** Every BetType, in contract order. */
 export const DECISION_BET_TYPES = Object.freeze(Object.keys(BET_TYPE_PRESENT) as BetType[]);
 
-export const DECISION_ACTIONS = Object.freeze(['bet', 'skip', 'stop'] as const);
+const DECISION_ACTIONS = Object.freeze(['bet', 'skip', 'stop'] as const);
 
 // ───────────────────────────── JSON Schema ─────────────────────────────
 
@@ -96,8 +96,9 @@ export const PLAYER_DECISION_JSON_SCHEMA: Record<string, unknown> = {
 
 /**
  * The decision schema for one session. When the session does not let the model end it
- * (limits.allowModelStop false), "stop" is removed from the action enum so structured-output
- * providers cannot produce it; parse-time checks still reject a "stop" that slips through.
+ * (limits.allowModelStop false), "stop" is removed from the action enum AND from every description,
+ * so structured-output providers are never invited to produce it; parse-time checks still reject a
+ * "stop" that slips through.
  */
 export function decisionJsonSchema(opts: { allowStop: boolean }): Record<string, unknown> {
   if (opts.allowStop) return PLAYER_DECISION_JSON_SCHEMA;
@@ -111,6 +112,10 @@ export function decisionJsonSchema(opts: { allowStop: boolean }): Record<string,
         enum: DECISION_ACTIONS.filter((a) => a !== 'stop'),
         description: '"bet" to place the bets listed in "bets", or "skip" to sit this round out.',
       },
+      bets: {
+        ...props.bets,
+        description: 'Required and non-empty when action is "bet"; omit (or leave empty) for "skip".',
+      },
     },
   };
 }
@@ -118,7 +123,7 @@ export function decisionJsonSchema(opts: { allowStop: boolean }): Record<string,
 // ───────────────────────────── zod mirror ─────────────────────────────
 
 /** One bet as a model may state it. Strict: unknown keys are rejected. */
-export const BetInputSchema = z.strictObject({
+const BetInputSchema = z.strictObject({
   type: z.enum(DECISION_BET_TYPES as unknown as [BetType, ...BetType[]]),
   numbers: z.array(z.int()).optional(),
   index: z.int().optional(),
@@ -130,7 +135,7 @@ export const BetInputSchema = z.strictObject({
  *  - action "bet"        → bets required and non-empty
  *  - action "skip"/"stop" → bets absent or empty (a non-empty list is contradictory → invalid)
  */
-export const PlayerDecisionSchema = z
+const PlayerDecisionSchema = z
   .strictObject({
     action: z.enum(DECISION_ACTIONS),
     bets: z.array(BetInputSchema).optional(),
@@ -156,16 +161,15 @@ export const PlayerDecisionSchema = z
 const MAX_PARSE_CHARS = 200_000;
 
 /**
- * Strip reasoning blocks and markdown code fences from model text.
+ * Remove model reasoning from text:
  *  - <think>…</think> / <thinking>…</thinking> blocks (any number, case-insensitive) are removed.
  *  - A dangling "</think>" (opening tag was part of the chat template) → keep only what follows it.
  *  - An unterminated "<think>" → everything after it is reasoning and is removed.
- *  - ``` / ```json fence markers are removed (their content is kept).
- * Returns the trimmed remainder plus flags that explain an empty result.
+ * Used before parsing AND before raw output is stored, so hidden reasoning is never kept or shown.
+ * `removed` tells whether anything was stripped; `unterminatedThink` explains an empty result.
  */
-export function normalizeDecisionText(text: string): { text: string; unterminatedThink: boolean } {
-  let s = text.replace(/^﻿/, '');
-  s = s.replace(/<(think|thinking)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
+export function stripReasoning(text: string): { text: string; removed: boolean; unterminatedThink: boolean } {
+  let s = text.replace(/<(think|thinking)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
 
   // Orphan closing tag: the reasoning started before the returned text.
   const orphanClose = /<\/(think|thinking)\s*>/gi;
@@ -179,9 +183,18 @@ export function normalizeDecisionText(text: string): { text: string; unterminate
     unterminatedThink = true;
     s = s.slice(0, open.index);
   }
+  return { text: s, removed: s !== text, unterminatedThink };
+}
 
-  s = s.replace(/```[A-Za-z0-9_-]*[ \t]*/g, '');
-  return { text: s.trim(), unterminatedThink };
+/**
+ * Strip reasoning blocks (see stripReasoning) and markdown code fences from model text.
+ * ``` / ```json fence markers are removed (their content is kept).
+ * Returns the trimmed remainder plus a flag that explains an empty result.
+ */
+export function normalizeDecisionText(text: string): { text: string; unterminatedThink: boolean } {
+  const stripped = stripReasoning(text.replace(/^﻿/, ''));
+  const s = stripped.text.replace(/```[A-Za-z0-9_-]*[ \t]*/g, '');
+  return { text: s.trim(), unterminatedThink: stripped.unterminatedThink };
 }
 
 /**
@@ -284,7 +297,7 @@ function truncateChars(s: string, max: number): string {
 }
 
 /** Validate an already-parsed value against the strict decision schema. */
-export function validateDecisionObject(value: unknown):
+function validateDecisionObject(value: unknown):
   | { ok: true; decision: PlayerDecision }
   | { ok: false; errors: string[] } {
   const r = PlayerDecisionSchema.safeParse(value);

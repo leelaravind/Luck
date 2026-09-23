@@ -5,6 +5,7 @@
  * docs/providers-cli-laya.md.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +15,7 @@ const FAKE = fileURLToPath(new URL('../../../tests/fixtures/fake-claude.mjs', im
 const TMP_ROOT = fileURLToPath(new URL('../../../tmp/8/claudeCli-test/', import.meta.url));
 
 type Mod = typeof import('./claudeCli.js');
+type AdapterOptions = NonNullable<Parameters<Mod['createClaudeCliAdapter']>[0]>;
 
 /** Fresh module per test: the boundary-violation disable flag is process(module)-wide on purpose. */
 async function freshModule(): Promise<Mod> {
@@ -34,21 +36,37 @@ afterAll(() => {
 function files() {
   return {
     record: path.join(caseDir, 'record.json'),
+    meta: path.join(caseDir, 'meta.jsonl'),
     pid: path.join(caseDir, 'pid.txt'),
-    sandbox: path.join(caseDir, 'base', 'tmp', 'cli-sandbox'),
+    sandbox: path.join(caseDir, 'sandbox'),
+    /** The fake keeps each conversation's running totals here (like the real CLI's transcript). */
+    state: caseDir,
   };
 }
 
-async function fakeAdapter(scenario: string, extraEnv: Record<string, string> = {}, mod?: Mod): Promise<{ adapter: ProviderAdapter; mod: Mod }> {
-  const m = mod ?? (await freshModule());
+function fakeEnv(scenario: string, extraEnv: Record<string, string> = {}): Record<string, string> {
   const f = files();
+  return {
+    FAKE_CLAUDE_SCENARIO: scenario,
+    FAKE_CLAUDE_RECORD_FILE: f.record,
+    FAKE_CLAUDE_META_RECORD_FILE: f.meta,
+    FAKE_CLAUDE_PID_FILE: f.pid,
+    FAKE_CLAUDE_STATE_DIR: f.state,
+    ...extraEnv,
+  };
+}
+
+async function fakeAdapter(
+  scenario: string,
+  extraEnv: Record<string, string> = {},
+  mod?: Mod,
+  extraOpts: Partial<AdapterOptions> = {},
+): Promise<{ adapter: ProviderAdapter; mod: Mod }> {
+  const m = mod ?? (await freshModule());
   const adapter = m.createClaudeCliAdapter({
-    baseDir: path.join(caseDir, 'base'),
-    spawnOverride: {
-      command: process.execPath,
-      prefixArgs: [FAKE],
-      env: { FAKE_CLAUDE_SCENARIO: scenario, FAKE_CLAUDE_RECORD_FILE: f.record, FAKE_CLAUDE_PID_FILE: f.pid, ...extraEnv },
-    },
+    sandboxDir: files().sandbox,
+    spawnOverride: { command: process.execPath, prefixArgs: [FAKE], env: fakeEnv(scenario, extraEnv) },
+    ...extraOpts,
   });
   return { adapter, mod: m };
 }
@@ -72,6 +90,17 @@ const CFG: ResolvedProviderConfig = { kind: 'claude-cli', useSubscriptionAuth: t
 function readRecord(): { argv: string[]; stdin: string; cwd: string; envKeys: string[]; hasApiKey: boolean; hasAuthToken: boolean; maxOutputTokens: string | null } {
   return JSON.parse(fs.readFileSync(files().record, 'utf8'));
 }
+
+/** One entry per `--version` / `auth status` child the connection test started. */
+function readMeta(): { argv: string[]; cwd: string; envKeys: string[]; hasApiKey: boolean; hasAuthToken: boolean }[] {
+  return fs
+    .readFileSync(files().meta, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((l) => JSON.parse(l));
+}
+
+const sig = () => new AbortController().signal;
 
 function isAlive(pid: number): boolean {
   try {
@@ -175,7 +204,7 @@ describe('claude-cli binary resolution (fixture files)', () => {
     const m = await freshModule();
     const p = path.join(caseDir, 'claude.cmd');
     fs.writeFileSync(p, '@echo off\n');
-    const adapter = m.createClaudeCliAdapter({ baseDir: path.join(caseDir, 'base') });
+    const adapter = m.createClaudeCliAdapter({ sandboxDir: files().sandbox });
     const c = adapter.check({ kind: 'claude-cli', cliPath: p, useSubscriptionAuth: true });
     expect(c.configured).toBe(false);
     expect(c.enabled).toBe(false);
@@ -496,5 +525,248 @@ describe('claude-cli testConnection and error classification (fixture)', () => {
     const e = m.classifyCliError('Invalid API key sk-ant-api03-abcdefghijklmnopqrstuvwxyz · Please run /login');
     expect(e.code).toBe('auth');
     expect(e.message).not.toContain('abcdefghijklmnop');
+  });
+});
+
+// ───────────────────────────── running totals of a resumed conversation ─────────────────────────────
+
+describe('claude-cli per-turn cost and API time in a resumed conversation (fixture)', () => {
+  /** Raw result events the fake emitted, captured through the adapter's diagnostics tap. */
+  function resultTap(): { opts: Partial<AdapterOptions>; results: Record<string, unknown>[] } {
+    const results: Record<string, unknown>[] = [];
+    return {
+      results,
+      opts: {
+        debugTap: (line) => {
+          const ev = JSON.parse(line) as Record<string, unknown>;
+          if (ev.type === 'result') results.push(ev);
+        },
+      },
+    };
+  }
+
+  it('turns 2 and 3 report only the increase of the running total_cost_usd / duration_api_ms', async () => {
+    const tap = resultTap();
+    const { adapter } = await fakeAdapter(
+      'ok',
+      { FAKE_CLAUDE_TURN_COSTS: '0.004,0.0015,0.0021', FAKE_CLAUDE_TURN_API_MS: '1200,800,650' },
+      undefined,
+      tap.opts,
+    );
+    const key = { conversationKey: 'luck-session-totals' };
+    const t1 = await adapter.decide(request(key), CFG, sig());
+    const t2 = await adapter.decide(request(key), CFG, sig());
+    const t3 = await adapter.decide(request(key), CFG, sig());
+    for (const t of [t1, t2, t3]) expect(t.ok).toBe(true);
+
+    // The fake (like the real CLI) reported RUNNING totals for the conversation…
+    const reportedCost = tap.results.map((r) => r.total_cost_usd as number);
+    expect(reportedCost).toHaveLength(3);
+    expect(reportedCost[0]).toBeCloseTo(0.004, 12);
+    expect(reportedCost[1]).toBeCloseTo(0.0055, 12);
+    expect(reportedCost[2]).toBeCloseTo(0.0076, 12);
+    expect(tap.results.map((r) => r.duration_api_ms)).toEqual([1200, 2000, 2650]);
+
+    // …and the adapter reports each turn's share.
+    expect(t1.providerCostUsd).toBeCloseTo(0.004, 12);
+    expect(t1.generationMs).toBe(1200);
+    expect(t2.providerCostUsd).toBeCloseTo(0.0015, 12);
+    expect(t2.generationMs).toBe(800);
+    expect(t3.providerCostUsd).toBeCloseTo(0.0021, 12);
+    expect(t3.generationMs).toBe(650);
+    // Summing the per-turn figures gives the CLI's own conversation total (no over-count).
+    expect(t1.providerCostUsd! + t2.providerCostUsd! + t3.providerCostUsd!).toBeCloseTo(0.0076, 12);
+
+    // Tokens come from result.usage, which is already per turn; modelUsage (a running total) only names the model.
+    expect(t2.usage).toMatchObject({ inputTokens: 812, outputTokens: 57, known: true });
+    expect(t2.modelReported).toBe('haiku');
+    expect(t1.note).not.toMatch(/running conversation totals/);
+    expect(t2.note).toMatch(/turn 2 \(resumed\)/);
+    expect(t2.note).toMatch(/this turn's increase of the CLI's running conversation totals \(conversation total so far \$0\.0055\)/);
+    expect(t3.note).toMatch(/API time 650 ms/);
+  });
+
+  it('an unknown previous total makes the resumed turn cost unknown (null + note), never the running total', async () => {
+    const { adapter } = await fakeAdapter('ok', {
+      FAKE_CLAUDE_TURN_COSTS: '0.004,0.0015',
+      FAKE_CLAUDE_TURN_API_MS: '1200,800',
+      FAKE_CLAUDE_OMIT_TOTALS_ON_TURN: '1',
+    });
+    const key = { conversationKey: 'luck-session-unknown-base' };
+    const t1 = await adapter.decide(request(key), CFG, sig());
+    expect(t1.ok).toBe(true);
+    expect(t1.providerCostUsd).toBeNull(); // the CLI did not report a cost on this turn
+    expect(t1.generationMs).toBeNull();
+
+    const t2 = await adapter.decide(request(key), CFG, sig()); // CLI reports 0.0055 / 2000 ms (running totals)
+    expect(t2.ok).toBe(true);
+    expect(t2.providerCostUsd).toBeNull();
+    expect(t2.generationMs).toBeNull();
+    expect(t2.note).toMatch(/cost unknown: the CLI reports a running total for the conversation and the previous total is not known/);
+    expect(t2.note).toMatch(/API time unknown/);
+
+    // Once a total has been seen, the next turn is exact again.
+    const t3 = await adapter.decide(request(key), CFG, sig());
+    expect(t3.providerCostUsd).toBeCloseTo(0.0015, 12);
+    expect(t3.generationMs).toBe(800);
+  });
+
+  it('a zeroed error result mid-conversation yields no negative cost and keeps the previous total', async () => {
+    const { adapter, mod } = await fakeAdapter('ok', { FAKE_CLAUDE_TURN_COSTS: '0.004,0.0015', FAKE_CLAUDE_TURN_API_MS: '1200,800' });
+    const key = { conversationKey: 'luck-session-zeroed' };
+    expect((await adapter.decide(request(key), CFG, sig())).providerCostUsd).toBeCloseTo(0.004, 12);
+
+    // Same module → same conversation map; this run resumes and gets an error result with zeroed totals.
+    const { adapter: failing } = await fakeAdapter('auth_error', {}, mod);
+    const bad = await failing.decide(request(key), CFG, sig());
+    expect(bad.error?.code).toBe('auth');
+    expect(readRecord().argv).toContain('--resume');
+    expect(bad.providerCostUsd).toBeNull();
+    expect(bad.note).toMatch(/cost unknown: the CLI's running total \(0\) is below the previous one \(0\.004\)/);
+
+    const next = await adapter.decide(request(key), CFG, sig()); // CLI total 0.0055 continues from the transcript
+    expect(next.ok).toBe(true);
+    expect(next.providerCostUsd).toBeCloseTo(0.0015, 12);
+    expect(next.generationMs).toBe(800);
+  });
+
+  it('a running total that restarts after a successful result: that turn is unknown, the next one exact again', async () => {
+    const { adapter } = await fakeAdapter('ok', {
+      FAKE_CLAUDE_TURN_COSTS: '0.004,0.0015,0.0021',
+      FAKE_CLAUDE_TURN_API_MS: '1200,800,650',
+      FAKE_CLAUDE_RESET_TOTALS_ON_TURN: '2',
+    });
+    const key = { conversationKey: 'luck-session-restart' };
+    expect((await adapter.decide(request(key), CFG, sig())).providerCostUsd).toBeCloseTo(0.004, 12);
+    const t2 = await adapter.decide(request(key), CFG, sig()); // CLI total restarts: 0.0015 < 0.004
+    expect(t2.ok).toBe(true);
+    expect(t2.providerCostUsd).toBeNull();
+    expect(t2.generationMs).toBeNull();
+    expect(t2.note).toMatch(/cost unknown: the CLI's running total \(0\.0015\) is below the previous one \(0\.004\)/);
+    const t3 = await adapter.decide(request(key), CFG, sig()); // CLI total 0.0036 from the new base 0.0015
+    expect(t3.providerCostUsd).toBeCloseTo(0.0021, 12);
+    expect(t3.generationMs).toBe(650);
+  });
+
+  it('a resumed attempt that ended without a result is flagged on the next turn', async () => {
+    const { adapter, mod } = await fakeAdapter('ok');
+    const key = { conversationKey: 'luck-session-lost-attempt' };
+    expect((await adapter.decide(request(key), CFG, sig())).ok).toBe(true);
+    const { adapter: hanging } = await fakeAdapter('hang', {}, mod);
+    const lost = await hanging.decide(request({ ...key, timeoutMs: 800 }), CFG, sig());
+    expect(lost.error?.code).toBe('timeout');
+    const next = await adapter.decide(request(key), CFG, sig());
+    expect(next.ok).toBe(true);
+    expect(readRecord().argv).toContain('--resume');
+    expect(next.note).toMatch(/turn 2 \(resumed\)/);
+    expect(next.note).toMatch(/earlier attempt in this conversation ended without a result/);
+  });
+});
+
+// ───────────────────────────── check(): an invalid model is blocking ─────────────────────────────
+
+describe('claude-cli check() and the model name', () => {
+  it('an invalid model makes the adapter not configured / not enabled with a clear issue', async () => {
+    const { adapter, mod } = await fakeAdapter('ok');
+    for (const bad of ['--tools=Bash', '-p', 'haiku --tools default']) {
+      const c = adapter.check({ ...CFG, model: bad });
+      expect(c.configured, bad).toBe(false);
+      expect(c.enabled, bad).toBe(false);
+      expect(c.issues.join(' '), bad).toMatch(/Model name is not valid/);
+    }
+    expect(adapter.check({ ...CFG, model: 'haiku' })).toEqual({ configured: true, enabled: true, issues: [] });
+    expect(adapter.check({ ...CFG, model: 'claude-opus-4-1[1m]' })).toEqual({ configured: true, enabled: true, issues: [] });
+    expect(adapter.check(CFG)).toEqual({ configured: true, enabled: true, issues: [] }); // no model = CLI default
+    // Still exported for create-time validation elsewhere.
+    expect(mod.isValidCliModel('--tools=Bash')).toBe(false);
+  });
+});
+
+// ───────────────────────────── sandbox location ─────────────────────────────
+
+describe('claude-cli sandbox directory', () => {
+  const saved = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it('defaults to <OS temp dir>/luck-cli-sandbox: dedicated, empty and outside the repository', async () => {
+    const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+    const rel = path.relative(repoRoot, path.join(os.tmpdir(), 'luck-cli-sandbox'));
+    expect(rel.startsWith('..') || path.isAbsolute(rel)).toBe(true);
+
+    // Point the OS temp dir at this test's folder so the real default directory is not touched.
+    const fakeTmp = path.join(caseDir, 'os-tmp');
+    fs.mkdirSync(fakeTmp);
+    process.env.TEMP = fakeTmp;
+    process.env.TMP = fakeTmp;
+    process.env.TMPDIR = fakeTmp;
+    const m = await freshModule();
+    const adapter = m.createClaudeCliAdapter({ spawnOverride: { command: process.execPath, prefixArgs: [FAKE], env: fakeEnv('ok') } });
+    const r = await adapter.decide(request(), CFG, sig());
+    expect(r.ok).toBe(true);
+    const expected = path.join(fakeTmp, 'luck-cli-sandbox');
+    expect(path.resolve(readRecord().cwd).toLowerCase()).toBe(path.resolve(expected).toLowerCase());
+    expect(fs.readdirSync(expected)).toEqual([]);
+  });
+});
+
+// ───────────────────────────── testConnection uses the real call environment ─────────────────────────────
+
+describe('claude-cli testConnection auth matches real calls (fixture)', () => {
+  const savedKey = process.env.ANTHROPIC_API_KEY;
+  afterEach(() => {
+    if (savedKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = savedKey;
+  });
+  const KEY_CFG: ResolvedProviderConfig = { kind: 'claude-cli', useSubscriptionAuth: false, apiKey: 'sk-ant-api03-fixture-key' };
+
+  it('subscription auth off: the test children get the API key, with the same env as decide()', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const { adapter } = await fakeAdapter('ok');
+    const t = await adapter.testConnection(KEY_CFG, sig());
+    expect(t.ok).toBe(true);
+    expect(t.message).toMatch(/API-key auth \(key source ANTHROPIC_API_KEY; subscription login not used\)/);
+    expect(t.message).toMatch(/does not validate the key/);
+    expect(t.message).not.toMatch(/logged in via/);
+    const meta = readMeta();
+    expect(meta.map((m) => m.argv)).toEqual([['--version'], ['auth', 'status', '--json']]);
+    for (const m of meta) expect(m.hasApiKey).toBe(true);
+
+    const r = await adapter.decide(request(), KEY_CFG, sig());
+    expect(r.ok).toBe(true);
+    const rec = readRecord();
+    expect(rec.hasApiKey).toBe(true);
+    // Identical environment apart from the per-call output cap.
+    const callKeys = rec.envKeys.filter((k) => k !== 'CLAUDE_CODE_MAX_OUTPUT_TOKENS');
+    for (const m of meta) expect(m.envKeys).toEqual(callKeys);
+    expect(path.resolve(meta[0]!.cwd).toLowerCase()).toBe(path.resolve(rec.cwd).toLowerCase());
+  });
+
+  it('subscription auth off without a key: fails with the same issue as decide(), without starting the CLI', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const { adapter } = await fakeAdapter('ok');
+    const noKey: ResolvedProviderConfig = { kind: 'claude-cli', useSubscriptionAuth: false };
+    const t = await adapter.testConnection(noKey, sig());
+    expect(t.ok).toBe(false);
+    expect(t.message).toMatch(/no ANTHROPIC_API_KEY/);
+    expect(fs.existsSync(files().pid)).toBe(false);
+    const r = await adapter.decide(request(), noKey, sig());
+    expect(r.error?.code).toBe('not_configured');
+    expect(r.error?.message).toBe(t.message);
+  });
+
+  it('subscription auth on: a server ANTHROPIC_API_KEY never reaches the test children', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-api03-server-key-must-not-leak';
+    const { adapter } = await fakeAdapter('ok');
+    const t = await adapter.testConnection(CFG, sig());
+    expect(t.ok).toBe(true);
+    expect(t.message).toMatch(/logged in via claude.ai, fixture plan/);
+    const meta = readMeta();
+    expect(meta).toHaveLength(2);
+    for (const m of meta) expect(m.hasApiKey).toBe(false);
   });
 });

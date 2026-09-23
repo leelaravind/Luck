@@ -18,9 +18,15 @@ import {
   type SessionLimits,
 } from '../../shared/contracts.js';
 import type { Repository } from '../types.js';
+import { isValidCliModel } from '../providers/claudeCli.js';
 import { DEFAULT_PRICING } from '../providers/pricing.js';
 
 export const SETTINGS_KEY = 'app';
+
+/** Default server wait between autonomous rounds (AppSettings.roundPacingMs). */
+export const DEFAULT_ROUND_PACING_MS = 7_000;
+/** Upper bound for roundPacingMs (10 minutes). 0 = no wait between rounds. */
+export const MAX_ROUND_PACING_MS = 600_000;
 
 // ───────────────────────────── schemas ─────────────────────────────
 
@@ -28,7 +34,7 @@ const PLAYER_KINDS = ['manual', 'demo', ...AI_PROVIDER_KINDS] as [PlayerKind, ..
 
 const posInt = (max: number) => z.int().min(1).max(max);
 
-export const PricingSchema = z.strictObject({
+const PricingSchema = z.strictObject({
   inputPerMTokUsd: z.number().min(0).max(10_000),
   outputPerMTokUsd: z.number().min(0).max(10_000),
   cacheReadPerMTokUsd: z.number().min(0).max(10_000).optional(),
@@ -58,20 +64,33 @@ const baseUrl = z
     }
   }, 'baseUrl must be an http(s) URL without embedded credentials');
 
-export const PlayerConfigSchema = z.strictObject({
-  kind: z.enum(PLAYER_KINDS),
-  model: modelId.optional(),
-  baseUrl: baseUrl.optional(),
-  temperature: z.number().min(0).max(2).optional(),
-  pricing: PricingSchema.optional(),
-  layaCheckpoint: z
-    .string()
-    .trim()
-    .min(1)
-    .max(100)
-    .regex(/^[A-Za-z0-9._-]+$/, 'layaCheckpoint may contain letters, digits, ".", "_" and "-"')
-    .optional(),
-});
+const PlayerConfigSchema = z
+  .strictObject({
+    kind: z.enum(PLAYER_KINDS),
+    model: modelId.optional(),
+    baseUrl: baseUrl.optional(),
+    temperature: z.number().min(0).max(2).optional(),
+    pricing: PricingSchema.optional(),
+    layaCheckpoint: z
+      .string()
+      .trim()
+      .min(1)
+      .max(100)
+      .regex(/^[A-Za-z0-9._-]+$/, 'layaCheckpoint may contain letters, digits, ".", "_" and "-"')
+      .optional(),
+  })
+  .superRefine((p, ctx) => {
+    // The Claude Code CLI receives the model as a command-line argument: refuse anything that is not
+    // an alias or model id up front (at session creation / when settings are saved), not at the
+    // first decision.
+    if (p.kind === 'claude-cli' && p.model !== undefined && !isValidCliModel(p.model)) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['model'],
+        message: 'Claude Code CLI model must be an alias like "haiku" or a model id (letters, digits, . _ : - [ ]; it may not start with "-")',
+      });
+    }
+  });
 
 /** Shape + range rules for each limit (consistency across fields is checked in validateLimits). */
 const LimitsShape = {
@@ -93,10 +112,10 @@ const LimitsShape = {
   allowModelStop: z.boolean().default(false),
 } satisfies Record<keyof SessionLimits, z.ZodType>;
 
-export const SessionLimitsSchema = z.strictObject(LimitsShape);
-export const PartialLimitsSchema = z.strictObject(LimitsShape).partial();
+const SessionLimitsSchema = z.strictObject(LimitsShape);
+const PartialLimitsSchema = z.strictObject(LimitsShape).partial();
 
-export const CreateSessionRequestSchema = z.strictObject({
+const CreateSessionRequestSchema = z.strictObject({
   name: z.string().trim().max(80).optional(),
   player: PlayerConfigSchema,
   limits: PartialLimitsSchema.optional(),
@@ -105,7 +124,9 @@ export const CreateSessionRequestSchema = z.strictObject({
 const SettingsPatchSchema = z.strictObject({
   defaultLimits: PartialLimitsSchema.optional(),
   animationSpeed: z.enum(['normal', 'fast', 'instant']).optional(),
+  roundPacingMs: z.int().min(0).max(MAX_ROUND_PACING_MS).optional(),
   reduceMotion: z.enum(['system', 'on', 'off']).optional(),
+  /** The COMPLETE map of the user's pricing entries (see saveSettings). */
   pricing: z.record(z.string().min(3).max(260), PricingSchema).optional(),
   players: z.partialRecord(z.enum(AI_PROVIDER_KINDS as unknown as [AiProviderKind, ...AiProviderKind[]]), PlayerConfigSchema).optional(),
 });
@@ -163,19 +184,41 @@ export function validatePlayerConfig(value: unknown): PlayerConfig {
 interface StoredSettings {
   defaultLimits?: Partial<SessionLimits>;
   animationSpeed?: AppSettings['animationSpeed'];
+  roundPacingMs?: number;
   reduceMotion?: AppSettings['reduceMotion'];
+  /** User pricing entries only; the default assumptions always come from DEFAULT_PRICING. */
   pricing?: Record<string, Pricing>;
   players?: AppSettings['players'];
 }
 
-export function defaultSettings(): AppSettings {
+function defaultSettings(): AppSettings {
   return {
     defaultLimits: { ...DEFAULT_LIMITS },
     animationSpeed: 'normal',
+    roundPacingMs: DEFAULT_ROUND_PACING_MS,
     reduceMotion: 'system',
     pricing: { ...DEFAULT_PRICING },
     players: {},
   };
+}
+
+/**
+ * The entries of a pricing map that belong to the user: every 'user' entry, plus any entry for a
+ * key that has no default. A 'default-assumption' copy of a built-in default is not the user's
+ * (older versions stored the whole merged map), so the current default is used for it instead.
+ */
+function userPricingEntries(pricing: Readonly<Record<string, Pricing>> | undefined): Record<string, Pricing> {
+  const out: Record<string, Pricing> = {};
+  for (const [key, p] of Object.entries(pricing ?? {})) {
+    if (!p || typeof p !== 'object') continue;
+    if (p.source === 'default-assumption' && Object.hasOwn(DEFAULT_PRICING, key)) continue;
+    out[key] = p;
+  }
+  return out;
+}
+
+function validRoundPacing(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= MAX_ROUND_PACING_MS;
 }
 
 function readStored(repo: Repository): StoredSettings {
@@ -198,15 +241,19 @@ export function loadSettings(repo: Repository): AppSettings {
   return {
     defaultLimits,
     animationSpeed: stored.animationSpeed ?? base.animationSpeed,
+    roundPacingMs: validRoundPacing(stored.roundPacingMs) ? stored.roundPacingMs : base.roundPacingMs,
     reduceMotion: stored.reduceMotion ?? base.reduceMotion,
-    pricing: { ...base.pricing, ...(stored.pricing ?? {}) },
+    pricing: { ...base.pricing, ...userPricingEntries(stored.pricing) },
     players: { ...(stored.players ?? {}) },
   };
 }
 
 /**
- * Apply a validated partial update and persist it. `pricing` and `players` entries are merged
- * key by key (a patch never wipes unrelated entries). Returns the merged settings.
+ * Apply a validated partial update and persist it. Returns the merged settings.
+ *  - `players` entries are merged key by key (a patch never wipes another provider's config).
+ *  - `pricing`, when present, is the COMPLETE map of the user's entries: a user entry that is not
+ *    in it is deleted. Default assumptions cannot be deleted (they always come from
+ *    DEFAULT_PRICING); sending one back unchanged — as the Settings form does — stores nothing.
  */
 export function saveSettings(repo: Repository, patch: unknown): AppSettings {
   const p = parseOrThrow(SettingsPatchSchema, patch ?? {}, 'settings');
@@ -219,8 +266,9 @@ export function saveSettings(repo: Repository, patch: unknown): AppSettings {
     next.defaultLimits = { ...(stored.defaultLimits ?? {}), ...p.defaultLimits };
   }
   if (p.animationSpeed) next.animationSpeed = p.animationSpeed;
+  if (p.roundPacingMs !== undefined) next.roundPacingMs = p.roundPacingMs;
   if (p.reduceMotion) next.reduceMotion = p.reduceMotion;
-  if (p.pricing) next.pricing = { ...(stored.pricing ?? {}), ...(p.pricing as Record<string, Pricing>) };
+  if (p.pricing) next.pricing = userPricingEntries(p.pricing as Record<string, Pricing>);
   if (p.players) {
     for (const [kind, cfg] of Object.entries(p.players)) {
       if (cfg && cfg.kind !== kind) {
@@ -243,9 +291,4 @@ export function rememberPlayer(repo: Repository, player: PlayerConfig): void {
     ...stored,
     players: { ...(stored.players ?? {}), [player.kind]: clean },
   } satisfies StoredSettings);
-}
-
-/** Pricing key used by AppSettings.pricing. */
-export function pricingKey(kind: PlayerKind, model: string | undefined): string {
-  return `${kind}:${model ?? ''}`;
 }

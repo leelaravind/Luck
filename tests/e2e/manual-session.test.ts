@@ -254,6 +254,8 @@ describe('E2E manual session (FIXTURE outcome sequence)', () => {
       'round', 'status', 'committed_at', 'settled_at', 'source', 'decision_action', 'decision_explanation', 'bets',
       'total_stake', 'winning_number', 'color', 'stake_returned', 'winnings', 'total_returned', 'net',
       'balance_before', 'balance_after',
+      // Per-round decision usage (audit #5), appended so earlier column positions are unchanged.
+      'decision_input_tokens', 'decision_output_tokens', 'decision_cached_tokens', 'decision_cost_usd', 'decision_cost_basis',
     ]);
     const header = rows[0]!.map(normHeader);
     const at = (row: string[], name: string) => row[header.indexOf(normHeader(name))]!;
@@ -264,6 +266,8 @@ describe('E2E manual session (FIXTURE outcome sequence)', () => {
       expect(at(line, 'round')).toBe(String(i + 1));
       expect(at(line, 'status')).toBe('settled');
       expect(at(line, 'source')).toBe('manual');
+      // Manual rounds have no AI decision: the per-decision usage cells stay blank (never an invented 0).
+      for (const c of ['decision_input_tokens', 'decision_output_tokens', 'decision_cached_tokens', 'decision_cost_usd']) expect(at(line, c)).toBe('');
       expect(at(line, 'winning_number')).toBe(String(exp.outcome));
       expect(at(line, 'color')).toBe(colorOf(exp.outcome));
       // Money columns are exact decimal credits ("45.50", "-15.00") — checked without floating point.

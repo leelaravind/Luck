@@ -350,6 +350,11 @@ export interface DecisionRecord {
   startedAt: string;
   completedAt: string | null;
   latencyMs: number | null;
+  /**
+   * Factual note from the provider adapter for the accepted attempt (e.g. Claude Code CLI
+   * "conversation … turn 2 (resumed)", Laya top labels / routing). Shown in the UI; never model text.
+   */
+  providerNote?: string | null;
 }
 
 export interface UsageNumbers {
@@ -510,8 +515,13 @@ export type AnimationSpeed = 'normal' | 'fast' | 'instant';
 
 export interface AppSettings {
   defaultLimits: SessionLimits;
-  /** Presentation only. Never changes how often models are called. */
+  /** Presentation only (wheel animation length). Never changes how often models are called. */
   animationSpeed: AnimationSpeed;
+  /**
+   * Server wait between autonomous rounds in ms, independent of animationSpeed. This — not the
+   * animation — decides how often a model is asked for a decision. Default 7000.
+   */
+  roundPacingMs: number;
   reduceMotion: 'system' | 'on' | 'off';
   /** Pricing assumptions keyed by `${kind}:${model}`. */
   pricing: Record<string, Pricing>;

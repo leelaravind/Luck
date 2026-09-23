@@ -1,20 +1,31 @@
-import type { DecisionRecord, LogEntry } from '../../../shared/contracts';
+import type { DecisionRecord, LogEntry, UsageRecord } from '../../../shared/contracts';
 import { COPY, DECISION_STATUS_LABEL } from '../../copy';
 import { betLabel, formatCredits, formatMs, formatTime, splitStatedStrategy } from '../../state/format';
+import { NO_USAGE } from '../../state/usage';
 import { Badge } from '../common/Badge';
 import { EmptyState } from '../common/EmptyState';
+import { DecisionUsage } from './DecisionUsage';
+import { ProviderNote } from './ProviderNote';
 
-/** Session log lines and the decision history, as stored by the server (newest first). */
+/**
+ * Session log lines and the decision history, as stored by the server (newest first). Each AI decision
+ * shows the provider adapter's note and its per-attempt usage (tokens, cost with basis, latency).
+ */
 export interface LogsDecisionsPanelProps {
   readonly logs: readonly LogEntry[];
   readonly decisions: readonly DecisionRecord[];
+  /** Usage records grouped by decisionId (attempts in order). */
+  readonly usageByDecision: ReadonlyMap<string, readonly UsageRecord[]>;
   /** Items held back until the current spin is revealed. */
   readonly heldBack: number;
 }
 
 const LEVEL_TONE = { info: 'neutral', warn: 'warning', error: 'danger' } as const;
 
-export function LogsDecisionsPanel({ logs, decisions, heldBack }: Readonly<LogsDecisionsPanelProps>) {
+/** Only model players have usage; the demo player (rule-based) and manual play never do. */
+const hasModelUsage = (d: DecisionRecord) => d.providerKind !== 'demo' && d.providerKind !== 'manual';
+
+export function LogsDecisionsPanel({ logs, decisions, usageByDecision, heldBack }: Readonly<LogsDecisionsPanelProps>) {
   return (
     <div className="grid min-w-0 gap-3 lg:grid-cols-2">
       <section aria-labelledby="logs-title" className="min-w-0">
@@ -80,6 +91,10 @@ export function LogsDecisionsPanel({ logs, decisions, heldBack }: Readonly<LogsD
                   <p className="m-0 text-danger-strong">{d.validationErrors.join(' · ')}</p>
                 ) : null}
                 {d.errorMessage ? <p className="m-0 text-danger-strong">{d.errorMessage}</p> : null}
+                <ProviderNote note={d.providerNote} compact />
+                {hasModelUsage(d) ? (
+                  <DecisionUsage records={usageByDecision.get(d.id) ?? NO_USAGE} decisionStatus={d.status} className="mt-0.5" />
+                ) : null}
               </li>
             ))}
           </ol>

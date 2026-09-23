@@ -3,11 +3,12 @@
  * file databases under tmp/3 for persistence, WAL, raw-constraint and rollback checks.
  * All bets/settlements are FIXTURES (see __tests__/fixtures.ts).
  */
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { GameError } from '../../shared/contracts.js';
+import { GameError, HTTP_STATUS_FOR } from '../../shared/contracts.js';
 import type { Repository } from '../types.js';
 import {
   at,
@@ -24,7 +25,7 @@ import {
   tmpDir,
   usage,
 } from './__tests__/fixtures.js';
-import { SCHEMA_ENUMS, SCHEMA_VERSION } from './schema.js';
+import { MIGRATIONS, SCHEMA_ENUMS, SCHEMA_VERSION } from './schema.js';
 import { openRepository } from './sqlite.js';
 
 const cleanups: (() => void)[] = [];
@@ -110,6 +111,39 @@ describe('openRepository', () => {
     db.exec(`PRAGMA user_version = ${SCHEMA_VERSION + 1}`);
     db.close();
     expect(() => openRepository(tmp.dbPath)).toThrow(/newer than this build supports/);
+  });
+
+  it('migrates a version-1 database forward (decisions gain provider_note, existing rows read back as null)', () => {
+    const again = tmpDir('migrate-v1');
+    cleanups.push(again.cleanup);
+    // Build a database exactly as a v1 build left it, with one stored decision.
+    mkdirSync(dirname(again.dbPath), { recursive: true });
+    const v1 = new DatabaseSync(again.dbPath);
+    v1.exec(MIGRATIONS[0]!);
+    v1.exec('PRAGMA user_version = 1');
+    v1.exec(`INSERT INTO sessions (id, name, mode, player, status, phase, balance, starting_balance, limits, created_at, updated_at)
+             VALUES ('s1', 'old', 'ai', '{"kind":"ollama"}', 'ready', 'ready', 100, 100, '{}', '${T0}', '${T0}')`);
+    v1.exec(`INSERT INTO decisions (id, session_id, round_number, epoch, provider_kind, status, validation_errors, attempts, started_at)
+             VALUES ('d-old', 's1', 1, 0, 'ollama', 'accepted', '[]', 1, '${T0}')`);
+    v1.close();
+
+    const repo = openRepository(again.dbPath);
+    cleanups.push(() => repo.close());
+    expect(SCHEMA_VERSION).toBeGreaterThanOrEqual(2);
+    expect(repo.getDecision('d-old')).toMatchObject({ id: 'd-old', status: 'accepted', providerNote: null });
+    expect(repo.updateDecision('d-old', { providerNote: 'Laya top labels: red 0.41' }).providerNote).toBe(
+      'Laya top labels: red 0.41',
+    );
+    const raw = new DatabaseSync(again.dbPath);
+    try {
+      expect((raw.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(SCHEMA_VERSION);
+      const cols = (raw.prepare('PRAGMA table_info(decisions)').all() as { name: string; notnull: number }[]).filter(
+        (c) => c.name === 'provider_note',
+      );
+      expect(cols).toEqual([expect.objectContaining({ name: 'provider_note', notnull: 0 })]);
+    } finally {
+      raw.close();
+    }
   });
 
   it('accepts every session status/phase value the contracts define', () => {
@@ -735,5 +769,165 @@ describe('usage, logs, settings, idempotency', () => {
     repo.putIdempotent('control', 'k', { action: 'start' });
     expect(repo.getIdempotent('create', 'k')).toEqual({ session: { id: 's1' } });
     expect(repo.getIdempotent('control', 'k')).toEqual({ action: 'start' });
+  });
+});
+
+// ───────────────────────────── audit fixes: idempotent create, overflow, provider notes ─────────────────────────────
+
+describe('createSessionIdempotent (session + ledger + idempotency record in ONE transaction)', () => {
+  const idem = (key: string, fingerprint = 'fp-1') => ({ scope: 'create-session', key, fingerprint });
+
+  it('creates the session, its session_start ledger row and the record { sessionId, fingerprint }', () => {
+    const repo = memRepo();
+    const res = repo.createSessionIdempotent(newSession('s1'), idem('k1'));
+    expect(res.created).toBe(true);
+    expect(res.fingerprint).toBe('fp-1');
+    expect(res.session).toMatchObject({ id: 's1', balance: 100_000, status: 'ready' });
+    expect(repo.listLedger('s1').map((e) => e.kind)).toEqual(['session_start']);
+    expect(repo.getIdempotent('create-session', 'k1')).toEqual({ sessionId: 's1', fingerprint: 'fp-1' });
+  });
+
+  it('replay: an existing key writes nothing and returns the ORIGINAL session and STORED fingerprint', () => {
+    const repo = memRepo();
+    const first = repo.createSessionIdempotent(newSession('s1'), idem('k1', 'fp-original'));
+    const replay = repo.createSessionIdempotent(newSession('s2', { name: 'different body' }), idem('k1', 'fp-other'));
+    expect(replay).toEqual({ session: first.session, created: false, fingerprint: 'fp-original' });
+    expect(repo.getSession('s2')).toBeNull();
+    expect(repo.listSessions().map((s) => s.id)).toEqual(['s1']);
+    expect(repo.listLedger('s1')).toHaveLength(1);
+    expect(repo.getIdempotent('create-session', 'k1')).toEqual({ sessionId: 's1', fingerprint: 'fp-original' });
+    // The same key in another scope is independent.
+    expect(repo.createSessionIdempotent(newSession('s3'), { ...idem('k1'), scope: 'other-scope' }).created).toBe(true);
+  });
+
+  it('concurrent-style double call from two connections to one file: exactly one session is created', () => {
+    const { repo: a, dbPath } = fileRepo('idem-two-conns');
+    const b = openRepository(dbPath);
+    cleanups.push(() => b.close());
+    const fromA = a.createSessionIdempotent(newSession('from-a'), idem('same-key', 'fp-a'));
+    const fromB = b.createSessionIdempotent(newSession('from-b'), idem('same-key', 'fp-b'));
+    expect(fromA.created).toBe(true);
+    expect(fromB).toMatchObject({ created: false, fingerprint: 'fp-a', session: { id: 'from-a' } });
+    expect(b.listSessions().map((s) => s.id)).toEqual(['from-a']);
+    expect(a.getSession('from-b')).toBeNull();
+  });
+
+  it('is atomic: if the idempotency write fails, the session and its ledger row are rolled back', () => {
+    const { repo, raw } = fileRepo('idem-atomic');
+    const db = raw();
+    db.exec(`CREATE TRIGGER inject_fault BEFORE INSERT ON idempotency
+             BEGIN SELECT RAISE(ABORT, 'injected fault'); END;`);
+    expectGameError(() => repo.createSessionIdempotent(newSession('s1'), idem('k1')), 'internal');
+    expect(repo.getSession('s1')).toBeNull();
+    expect(count(db, 'SELECT COUNT(*) AS n FROM sessions')).toBe(0);
+    expect(count(db, 'SELECT COUNT(*) AS n FROM ledger')).toBe(0);
+    db.exec('DROP TRIGGER inject_fault');
+    // A retry with the same key now succeeds exactly once.
+    expect(repo.createSessionIdempotent(newSession('s1'), idem('k1')).created).toBe(true);
+    expect(repo.createSessionIdempotent(newSession('s1-retry'), idem('k1')).created).toBe(false);
+    expect(count(db, 'SELECT COUNT(*) AS n FROM sessions')).toBe(1);
+  });
+
+  it('a duplicate session id under a NEW key fails without writing the key', () => {
+    const repo = memRepo();
+    repo.createSession(newSession('s1'));
+    expectGameError(() => repo.createSessionIdempotent(newSession('s1'), idem('fresh')), 'duplicate_request');
+    expect(repo.getIdempotent('create-session', 'fresh')).toBeNull();
+  });
+
+  it('accepts records written before fingerprints existed; refuses a record whose session is missing', () => {
+    const repo = memRepo();
+    repo.createSession(newSession('legacy'));
+    repo.putIdempotent('create-session', 'old-key', { sessionId: 'legacy' });
+    expect(repo.createSessionIdempotent(newSession('s2'), idem('old-key', 'fp-now'))).toMatchObject({
+      created: false,
+      fingerprint: 'fp-now',
+      session: { id: 'legacy' },
+    });
+    repo.putIdempotent('create-session', 'dangling', { sessionId: 'gone' });
+    expectGameError(() => repo.createSessionIdempotent(newSession('s3'), idem('dangling')), 'internal');
+    expect(repo.getSession('s3')).toBeNull();
+  });
+
+  it('validates its arguments before touching the database', () => {
+    const repo = memRepo();
+    expectGameError(() => repo.createSessionIdempotent(newSession('s1'), { scope: '', key: 'k', fingerprint: 'f' }), 'validation_error');
+    expectGameError(() => repo.createSessionIdempotent(newSession('s1'), { scope: 's', key: '', fingerprint: 'f' }), 'validation_error');
+    expectGameError(
+      () => repo.createSessionIdempotent(newSession('s1'), { scope: 's', key: 'k', fingerprint: undefined as never }),
+      'validation_error',
+    );
+    expect(repo.listSessions()).toEqual([]);
+  });
+});
+
+describe('balances near Number.MAX_SAFE_INTEGER', () => {
+  it('commitRound refuses a bet slip whose best possible win could not be credited exactly (no charge, no round)', () => {
+    const repo = memRepo();
+    const huge = Number.MAX_SAFE_INTEGER - 1_000;
+    repo.createSession(newSession('s1', { limits: { ...newSession('x').limits, startingBalance: huge } }));
+    const err = expectGameError(
+      () =>
+        repo.commitRound({
+          id: 'r1',
+          sessionId: 's1',
+          source: 'manual',
+          decisionId: null,
+          bets: [straightBet(7, 100)], // could return 3 600 > 1 000 headroom
+          idempotencyKey: 'k1',
+          committedAt: at(1),
+        }),
+      'limit_exceeded',
+    );
+    expect(err.message).toMatch(/largest balance/);
+    expect(repo.getRound('r1')).toBeNull();
+    expect(repo.getSession('s1')!.balance).toBe(huge);
+    // A slip that fits in the headroom is still accepted and settles.
+    const { applied, round } = playRound(repo, 's1', 'r2', [straightBet(7, 10)], 7); // returns 360
+    expect(applied).toBe(true);
+    expect(round.balanceAfter).toBe(huge + 350);
+  });
+
+  it('a settlement that would overflow the balance is an INTERNAL error (HTTP 500), not a 400, and changes nothing', () => {
+    const { repo, raw } = fileRepo('overflow-settle');
+    repo.createSession(newSession('s1'));
+    const bets = [straightBet(7, 100)];
+    repo.commitRound({ id: 'r1', sessionId: 's1', source: 'manual', decisionId: null, bets, idempotencyKey: 'k1', committedAt: at(1) });
+    repo.recordOutcome('r1', 7, at(2));
+    // Simulate a balance that grew out of range after commit (bypassing the commit-time guard).
+    const db = raw();
+    db.prepare('UPDATE sessions SET balance = ? WHERE id = ?').run(Number.MAX_SAFE_INTEGER - 10, 's1');
+    const err = expectGameError(() => repo.settleRound('r1', settleFixture(bets, 7), at(3)), 'internal');
+    expect(HTTP_STATUS_FOR[err.code]).toBe(500);
+    expect(repo.getRound('r1')!.status).toBe('outcome_recorded');
+    expect(repo.getSession('s1')).toMatchObject({ balance: Number.MAX_SAFE_INTEGER - 10, roundsPlayed: 0 });
+    expect(repo.listLedger('s1').filter((e) => e.kind === 'payout')).toHaveLength(0);
+  });
+});
+
+describe('decision provider notes', () => {
+  it('insert/update/read round-trip providerNote; absent means null', () => {
+    const repo = memRepo();
+    repo.createSession(newSession('s1'));
+    repo.insertDecision(decision('s1', 'd1', { providerNote: 'Claude Code CLI conversation abc: turn 2 (resumed)' }));
+    const { providerNote: _omit, ...withoutNote } = decision('s1', 'd2', { startedAt: at(5) });
+    repo.insertDecision(withoutNote);
+    expect(repo.getDecision('d1')!.providerNote).toBe('Claude Code CLI conversation abc: turn 2 (resumed)');
+    expect(repo.getDecision('d2')!.providerNote).toBeNull();
+
+    // A patch without providerNote keeps it; null clears it; a string sets it.
+    expect(repo.updateDecision('d1', { status: 'accepted' }).providerNote).toBe('Claude Code CLI conversation abc: turn 2 (resumed)');
+    expect(repo.updateDecision('d1', { providerNote: null }).providerNote).toBeNull();
+    expect(repo.updateDecision('d2', { providerNote: 'Laya top labels: red 0.41, black 0.38 (routing: colour)' }).providerNote).toBe(
+      'Laya top labels: red 0.41, black 0.38 (routing: colour)',
+    );
+    expect(repo.listDecisions('s1').map((d) => [d.id, d.providerNote])).toEqual([
+      ['d2', 'Laya top labels: red 0.41, black 0.38 (routing: colour)'],
+      ['d1', null],
+    ]);
+    expect(repo.exportSession('s1').decisions.map((d) => d.providerNote)).toEqual([
+      null,
+      'Laya top labels: red 0.41, black 0.38 (routing: colour)',
+    ]);
   });
 });

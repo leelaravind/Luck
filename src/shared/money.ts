@@ -23,10 +23,6 @@ export function parseCredits(text: string): Subunits | null {
   return whole * SUBUNITS_PER_CREDIT + frac;
 }
 
-export function isSubunits(n: unknown): n is Subunits {
-  return typeof n === 'number' && Number.isSafeInteger(n);
-}
-
 export function formatUsdMicros(micros: number | null | undefined): string {
   if (micros == null) return '—';
   const usd = micros / 1_000_000;

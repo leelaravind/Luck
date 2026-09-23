@@ -194,7 +194,6 @@ describe('RouletteWheel landing', () => {
   it.each<[AnimationSpeed, number]>([
     ['normal', 6500],
     ['fast', 3200],
-    ['instant', 400],
   ])('%s speed settles after about %i ms on the right pocket', (speed, duration) => {
     const { container, onSettled, update } = setup({ speed });
     update({ spin: spinOf(`r-${speed}`, 17) });
@@ -285,6 +284,38 @@ describe('RouletteWheel settle bookkeeping', () => {
     await nextTick();
     expect(read(container).rotorDeg).toBe(before.rotorDeg); // no idle drift either
     expect(onSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it('instant speed: no spin — the ball is placed in the pocket at once, then settles on the next tick', async () => {
+    expect(SPIN_DURATION_MS.instant).toBe(0);
+    const { container, onSettled, update } = setup({ speed: 'instant' });
+    const before = read(container);
+    update({ spin: spinOf('inst', 17) });
+    // Placed in the same render, before any animation frame and before onSettled (the reveal trigger).
+    const placed = read(container);
+    expect(placed.rotorDeg).toBe(before.rotorDeg); // no rotor push: nothing spins
+    expect(placed.landedFromTransforms).toBe(17);
+    expect(Math.abs(placed.ballR - BALL_POCKET_R)).toBeLessThan(0.01);
+    expect(placed.svg.getAttribute('data-spin-stage')).toBe('settled');
+    expect(onSettled).not.toHaveBeenCalled();
+    await nextTick();
+    expect(onSettled.mock.calls).toEqual([['inst']]);
+    const after = read(container);
+    expect(after.state).toBe('settled');
+    expect(after.landedAttr).toBe('17');
+    expect(after.highlightVisible).toBe(true);
+    expect(after.label).toBe('Roulette wheel. Last result: 17 black');
+    // Not reduced motion: the idle drift keeps turning the rotor, with the ball still in its pocket.
+    advance(2000, 100);
+    const later = read(container);
+    expect(angleDelta(later.rotorDeg, after.rotorDeg)).toBeGreaterThan(0);
+    expect(later.landedFromTransforms).toBe(17);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    // A follow-up instant spin is placed at once as well.
+    update({ spin: spinOf('inst-2', 0) });
+    expect(read(container).landedFromTransforms).toBe(0);
+    await nextTick();
+    expect(onSettled.mock.calls).toEqual([['inst'], ['inst-2']]);
   });
 
   it('turning reduced motion on mid-spin settles the running spin immediately, once', () => {

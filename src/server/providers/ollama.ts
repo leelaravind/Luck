@@ -3,9 +3,16 @@
  *
  *   GET  /api/version → { version }
  *   GET  /api/tags    → { models: [{ name, model, size, … }] }
- *   POST /api/chat    { model, stream:false, format:<JSON Schema>, messages, options } →
+ *   POST /api/chat    { model, stream:false, think:false, format:<JSON Schema>, messages, options } →
  *        { model, message:{content, thinking?}, done_reason, prompt_eval_count, eval_count,
  *          eval_duration (ns), load_duration (ns), total_duration (ns) }
+ *
+ * `think: false` is Ollama's documented switch for reasoning ("thinking") models. Without it Ollama
+ * turns thinking ON by default for models that support it, which spends the output-token cap on a
+ * hidden trace. Models without thinking support accept `think: false` (only a truthy value is
+ * refused), and older servers ignore the unknown field. The adapter still returns the raw content
+ * unchanged; some models write <think>…</think> into the content anyway, and that is stripped by the
+ * session layer before it is stored.
  *
  * Usage numbers are exactly what Ollama reports; nothing is estimated. Cost is not computed
  * here — the session runner records local inference as 'local-no-charge'.
@@ -185,6 +192,7 @@ export function createOllamaAdapter(): ProviderAdapter {
         body: {
           model,
           stream: false,
+          think: false,
           format: req.jsonSchema,
           messages: [
             { role: 'system', content: req.systemPrompt },

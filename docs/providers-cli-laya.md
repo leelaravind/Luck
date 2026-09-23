@@ -26,8 +26,8 @@ with an API key (the "Anthropic" player) instead. The app shows this in the play
   without a shell, and the adapter never uses a shell. The PATH search only looks for the native name, so
   the npm shim folder is skipped.
 - Nothing from the browser or HTTP API can choose or change the executable.
-- *Test connection* runs only `<claude> --version`: no prompt, no usage, login status not checked
-  (check it yourself with `claude auth status`).
+- *Test connection* runs `<claude> --version` and `<claude> auth status --json` with the same environment a
+  real decision uses — no prompt, no usage. See "Maintained conversation and connection check" at the end.
 
 ### Exact argv
 
@@ -94,8 +94,31 @@ normal per-token API billing applies.
 
 ### Sandbox working directory
 
-`<repo>/tmp/cli-sandbox` (git-ignored), created on demand. It **must be empty**; if anything is in it
-(e.g. a `CLAUDE.md` or `.mcp.json`) the call is refused with `not_configured`. Both live calls left it empty.
+`<OS temp folder>/luck-cli-sandbox` — for example `%TEMP%\luck-cli-sandbox` on Windows or
+`$TMPDIR/luck-cli-sandbox` (`/tmp/luck-cli-sandbox`) on macOS/Linux — created on demand, **outside the
+repository**, so the CLI never sees the project (no project files, no git status) and Claude Code does not file
+its conversation transcripts under the project's path. It **must be empty**; if anything is in it (e.g. a
+`CLAUDE.md` or `.mcp.json`) the call is refused with `not_configured`. On macOS/Linux it is created with mode
+`0700` and refused if it is a symlink, owned by another user, or writable by group/others (a shared `/tmp`).
+
+Earlier versions used `<repo>/tmp/cli-sandbox` (git-ignored, but inside the repository); a leftover
+`tmp/cli-sandbox` folder is no longer used and can be deleted.
+
+### What the model sees
+
+Luck sends the model: its system prompt (`--system-prompt`), on the first round a short opening message, the
+`GameObservation` JSON on stdin, and the decision JSON schema (`--json-schema`). Nothing else from Luck.
+
+**The Claude Code CLI adds context of its own to every conversation** — observed on 2026-09-23 (Claude Code
+2.1.280, Windows 11, subscription login) in the CLI's transcript (`attachment` entries in the conversation's
+`.jsonl` under `~/.claude/projects/`): an `environment` snapshot (working directory = the sandbox above, "is a
+git repository: no", platform, shell and OS version), the current `date`, and a `session_context` entry with
+**your account e-mail address**. So the model sees the game observation **plus** that CLI-added context.
+Claude Code 2.1.280 offers no supported flag that switches this off with a subscription login (`--bare`
+requires API-key auth and does not document it), so Luck cannot remove it. It is sent to the same Anthropic account the CLI is logged in to, not to
+a third party. With `CLAUDE_CLI_USE_SUBSCRIPTION=false` (API-key auth) this was not checked. To see it yourself,
+open the newest `.jsonl` in the `~/.claude/projects/` folder named after the sandbox path and list its
+`attachment` entries.
 
 ### Boundary enforcement
 
@@ -118,6 +141,8 @@ The child is killed immediately. A stream without an `init` event is not trusted
   tools available, agents cannot be started. The CLI's normal telemetry is unchanged.
 - The `init` event shows the CLI opens a local messaging named pipe (`messaging_socket_path`). The app does
   not use it; anything arriving that way could at most change the model's answer, which is validated anyway.
+- The CLI's own context (working directory, OS/shell, and with a subscription login your account e-mail) is
+  part of every conversation — see "What the model sees" above.
 - Whether a user-level `CLAUDE.md` is excluded cannot be seen in the stream. With `--setting-sources ""`
   it should not load (it is tied to the `user` source); the measured input size (2 971 tokens for the
   system prompt, observation, schema and CLI scaffolding) is consistent with that, but it is not proof.
@@ -128,12 +153,24 @@ The child is killed immediately. A stream without an `init` event is not trusted
 
 | Field | Source | Notes |
 |---|---|---|
-| input / output / cache tokens | `result.usage` | Summed over the CLI's API requests. Output includes thinking tokens; `reasoningTokens` = `usage.output_tokens_details.thinking_tokens`. |
-| cost | `result.total_cost_usd` → `providerCostUsd` | **The CLI's own estimate at list prices** (`modelUsage[…].costBasis: "list"`), **not billing**. With subscription auth nothing is billed per token; usage counts against plan limits instead. |
+| input / output / cache tokens | `result.usage` | **This turn only** (not a running total): summed over the API requests of this `claude -p` run. Output includes thinking tokens; `reasoningTokens` = `usage.output_tokens_details.thinking_tokens`. |
+| cost | increase of `result.total_cost_usd` → `providerCostUsd` | **The CLI's own estimate at list prices** (`modelUsage[…].costBasis: "list"`), **not billing**. With subscription auth nothing is billed per token; usage counts against plan limits instead. For a resumed conversation `total_cost_usd` is a **running total for the whole conversation**, so the adapter records this turn's increase over the previous turn's total (the whole value on the first turn). |
 | latency | measured by the adapter | Includes CLI start-up (~1–2 s). |
-| generation time | `result.duration_api_ms` | API time incl. time to first token; not pure generation time. |
-| model | `result.modelUsage` key | e.g. `claude-haiku-4-5-20251001` for alias `haiku`. |
+| generation time | increase of `result.duration_api_ms` | Also a running total for a resumed conversation → this turn's increase. API time incl. time to first token; not pure generation time. |
+| model | `result.modelUsage` key whose output grew this turn | e.g. `claude-haiku-4-5-20251001` for alias `haiku` (`modelUsage` is a running total too). |
 | quota | `rate_limit_event` → `RateLimitInfo` (source `cli-rate-limit-event`) | `status` (`allowed` / `allowed_warning` / `rejected`), `rateLimitType` (e.g. `five_hour`), `resetsAt`, and per-window `utilization` (fraction 0–1) under `unifiedWindows` (`five_hour`, `seven_day`). |
+
+If the previous total is not known (for example a retry after an attempt that produced no result) or a total
+goes down, that turn's cost / API time is recorded as **unknown** — never as the whole running total. The
+decision's note says when a figure is a turn's increase and shows the conversation total so far.
+
+**Correction (fixed in this version).** Earlier versions recorded each turn's *running total* as if it were the
+cost and API time of that one call, and then added those totals up. CLI costs were therefore **over-counted** —
+for a resumed conversation up to about 11× (one session showed $20.69 while the CLI's own conversation total was
+$1.85), tokens per second were shown too low, and a session with an app spending limit could stop early (one
+stopped at about 28 % of its budget). Per-turn increases are now recorded (fixture-tested in
+`src/server/providers/claudeCli.test.ts` with a two-turn conversation). Usage already saved by the earlier
+versions is not recalculated, so treat CLI cost and speed figures of older sessions as over-counted.
 
 **Not available:** remaining messages or tokens as absolute numbers, your plan's price, or any billing
 figure. Plan limits are only shown when the CLI emits a rate-limit event (it did on both live calls with
@@ -178,6 +215,7 @@ Then exactly **two** real `claude -p` calls were made through the adapter (model
 | Rate-limit event | five_hour `allowed`, utilization 0.14, reset 2026-09-23T12:00Z; seven_day 0.22 | five_hour `allowed`, utilization 0.15; seven_day 0.23, reset 2026-09-27T16:00Z |
 | Sandbox afterwards | empty | empty |
 
+Both were one-off calls (no resumed conversation), so their cost and API time are those of the single call.
 The adapter was adjusted after call 1 (thinking off, `--max-turns 2`, output-cap error mapped to
 `invalid_output`, rate-limit windows parsed). Call 2's decision itself was not validated here — the
 session runner does that (its stated total, 3 400, did not match the bets' sum of 2 900; the runner's
@@ -199,18 +237,22 @@ Summary: separate Python venv (`.venv-laya`), `pip install -r optional/laya/requ
   `{ model: <LAYA_CHECKPOINT>, state: <text summary>, questions: { action: { type: "choice", instructions, criteria } } }`.
   `Authorization: Bearer <LAYA_API_KEY>` only when configured.
 - `state` is a short text built **only** from the GameObservation: round, balance, limits, rounds
-  remaining, net result, last 10 winning numbers, last round's stake/net, and "outcomes are random".
-- `criteria` (14 labels): `skip, red, black, odd, even, low, high, dozen_1, dozen_2, dozen_3,
-  column_1, column_2, column_3, stop`.
+  remaining, net result, last 10 winning numbers, last round's stake/net.
+- `instructions` is one sentence naming the task (choose the next action in a virtual European roulette game).
+- `criteria` (**13 labels**, `LAYA_CRITERIA` in `laya.ts`): `skip, red, black, odd, even, low, high,
+  dozen_1, dozen_2, dozen_3, column_1, column_2, column_3`. There is **no `stop` label**: a classifier must not
+  end the session (the user and the session limits do). Earlier versions offered `stop`, and Laya picked it
+  almost every time (reviewer defect D4).
 
 ### Mapping and honesty
 
 - Laya returns `answers.action = { choice, probabilities, confidence }`. The **adapter** maps the label:
-  `skip` / `stop` → that action; any other label → **one** bet on that category with **stake = the session
+  `skip` → skip; any other of the 13 labels → **one** bet on that category with **stake = the session
   minimum** (`limits.minStake`). **Laya only picks the category; the adapter fixes the stake.**
 - Explanation, e.g. `Laya classifier chose 'red' (p=0.31). Stake fixed at the session minimum by the adapter.`
   The top label probabilities and routing are shown as a note.
-- Unknown label or missing answer → `invalid_output`; never converted into another bet.
+- Unknown label or missing answer → `invalid_output`; never converted into another bet. A returned `stop`
+  (not one of the 13 labels) is such an unknown label, so it is **invalid output** — never a stop, never a bet.
 - Usage: `inputTokens` = `usage.input_tokens`; **`outputTokens` = not applicable (null)** — a classifier
   generates nothing, so the app never reports "0 generated tokens". No cost (local, `local-no-charge`).
 - Laya is **not a roulette model** and cannot predict outcomes; its probabilities describe how well a label
@@ -218,12 +260,20 @@ Summary: separate Python venv (`.venv-laya`), `pip install -r optional/laya/requ
 
 ### What was verified
 
-Laya is **not installed** on the development machine; no live Laya call was made. The adapter is tested
-against a **mock** `laya-serve` (node:http on an ephemeral port) using the documented request/response
-shapes (health, label mapping for every label, unknown label → `invalid_output`, `outputTokens` null,
-Bearer header only when configured, key redacted from errors, timeout, abort, unreachable server).
-The response shape `{ choice, probabilities, confidence }` comes from the Laya PyPI documentation; the
-`/health` shape comes from the lead's research and is handled defensively.
+**Live** (2026-09-23, Windows 11, CPU): `laya[serve]==0.3.7` installed in a separate venv, `laya-serve` started
+with `LAYA_HOST=127.0.0.1` on port 8000, checkpoint `english` (weights downloaded from Hugging Face on first
+use). *Test connection* (`GET /health`) succeeded; a real `POST /v1/systemone` answered with
+`answers.action = { choice, probabilities, confidence }`, `usage.input_tokens` and `routing` (the shapes the
+adapter expects). After `stop` was removed from the label set, a 3-round session through the app played
+skip, red (lost), red (won); the decisions were validated and settled by the engine, the label probability and
+Laya's confidence were shown raw (uncalibrated — the model card says checkpoints ship over-confident),
+input tokens were 262–276 per decision, output tokens "not applicable", about 1.9 s per decision. Details:
+[verification.md](verification.md#providers-live-vs-fixture).
+
+**Fixtures** (default test run): `src/server/providers/laya.test.ts` uses a **mock** `laya-serve` (node:http on
+an ephemeral port): health, the mapping of every one of the 13 labels, unknown label (incl. `stop`) →
+`invalid_output`, `outputTokens` null, Bearer header only when configured, key redacted from errors, timeout,
+abort, unreachable server.
 
 
 ## Maintained conversation and connection check (added after live testing)
@@ -232,9 +282,11 @@ The response shape `{ choice, probabilities, confidence }` comes from the Laya P
   "Connected" only when the CLI says it is logged in, and shows the login method and plan, never the e-mail or organisation.
 - **One conversation per Luck session.** Verified live on 2026-09-23 (Claude Code 2.1.280, model alias `haiku`,
   subscription login): round 1 opened conversation `34ae2431…` (2 051 input / 158 output tokens, 4.2 s, CLI estimate
-  $0.0028); round 2 resumed the same conversation (2 549 / 168 tokens, 3.9 s, CLI estimate $0.0062) and its decision
-  referred back to round 1. Both decisions passed the engine's validation. Because the conversation grows, input
-  tokens per round grow too; the app budget check accounts for this with the CLI-reported cost.
+  $0.0028); round 2 resumed the same conversation (2 549 / 168 tokens, 3.9 s) and its decision referred back to
+  round 1. Both decisions passed the engine's validation. The "$0.0062" recorded for round 2 at the time was the
+  CLI's **running total for the conversation** (see *Correction* above); round 2's own share was about $0.0034
+  ($0.0062 − $0.0028). Because the conversation grows, input tokens per round grow too; the app budget check
+  accounts for this with the CLI-reported per-turn cost.
 - **Framing.** The opening message states the true context (a local simulation for an AI decision experiment, virtual
   credits only). It does not instruct the model to ignore its guidelines. If a model declines, the refusal is recorded
   as invalid output and the session pauses — it is never converted into a bet.

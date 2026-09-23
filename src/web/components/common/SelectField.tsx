@@ -17,6 +17,8 @@ export interface SelectFieldProps {
   readonly mono?: boolean;
   /** Visually hide the label (still announced). */
   readonly hideLabel?: boolean;
+  /** Called when the select gains focus, or is clicked again while focused (i.e. about to open). */
+  readonly onOpen?: () => void;
   readonly className?: string;
 }
 
@@ -29,6 +31,7 @@ export function SelectField({
   disabled = false,
   mono = false,
   hideLabel = false,
+  onOpen,
   className = '',
 }: Readonly<SelectFieldProps>) {
   const id = useId();
@@ -43,6 +46,8 @@ export function SelectField({
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
+        onFocus={onOpen}
+        onMouseDown={onOpen ? (e) => document.activeElement === e.currentTarget && onOpen() : undefined}
         aria-describedby={hintId}
         className={`h-8 w-full min-w-0 rounded-lg border border-hairline-strong bg-card px-2 text-sm text-ink focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-60 ${mono ? 'font-mono' : ''}`}
       >

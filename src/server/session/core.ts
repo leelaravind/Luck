@@ -4,7 +4,6 @@
  */
 import type {
   AiProviderKind,
-  AnimationSpeed,
   AppSettings,
   DecisionRecord,
   LogEntry,
@@ -27,7 +26,11 @@ export interface SessionCore {
   now(): Date;
   nowIso(): string;
   sleep: SleepFn;
-  presentationDelayMs(speed: AnimationSpeed): number;
+  /**
+   * Server wait between autonomous rounds for the current settings. Production: settings.roundPacingMs
+   * (independent of the animation speed, which is presentation only). Injectable for tests.
+   */
+  presentationDelayMs(settings: AppSettings): number;
   settings(): AppSettings;
 
   /** Round flow wiring (repo + outcome source + event emission). */

@@ -9,6 +9,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  DEFAULT_LIMITS,
   GameError,
   type AiProviderKind,
   type RoundRecord,
@@ -18,8 +19,12 @@ import {
 import { validateBetSlip } from '../../shared/bets.js';
 import { openRepository } from '../db/sqlite.js';
 import { createFixtureOutcomeSource } from '../engine/fixtureOutcome.js';
+import { clearRegisteredSecrets, registerSecret } from '../redact.js';
 import type { OutcomeSource, ProviderAdapter, ProviderCallResult } from '../types.js';
-import { createGameService } from './service.js';
+import { MAX_PROVIDER_NOTE_CHARS, REASONING_ONLY_OUTPUT } from './aiDecision.js';
+import { PAUSED_AFTER_FAILURE } from './runner.js';
+import { createGameService, createSessionFingerprint, defaultRoundPacingMs } from './service.js';
+import { DEFAULT_ROUND_PACING_MS } from './settings.js';
 import {
   betDecision,
   deferred,
@@ -163,6 +168,84 @@ describe('manual round flow', () => {
     const b = h.service.createSession({ player: { kind: 'manual' } }, 'same');
     expect(b.session.id).toBe(a.session.id);
     expect(h.service.listSessions()).toHaveLength(1);
+  });
+
+  it('#22: the same Idempotency-Key with a DIFFERENT request is refused (409); the same request replays', () => {
+    const h = harness();
+    const req = { name: 'first', player: { kind: 'manual' as const }, limits: { maxRounds: 5, minStake: 20 } };
+    const first = h.service.createSession(req, 'create-key');
+    // Same request, keys in another order → a genuine replay (canonical fingerprint).
+    const replay = h.service.createSession({ limits: { minStake: 20, maxRounds: 5 }, player: { kind: 'manual' }, name: 'first' }, 'create-key');
+    expect(replay.session.id).toBe(first.session.id);
+    expect(replay).toEqual(h.service.getSnapshot(first.session.id));
+    for (const different of [
+      { ...req, name: 'second' },
+      { ...req, limits: { maxRounds: 6, minStake: 20 } },
+      { ...req, player: { kind: 'demo' as const } },
+    ]) {
+      expect(() => h.service.createSession(different, 'create-key')).toThrow(
+        expect.objectContaining({ code: 'duplicate_request', details: { sessionId: first.session.id } }),
+      );
+    }
+    expect(h.service.listSessions()).toHaveLength(1);
+    // A replay still works after the default limits changed (the fingerprint covers the request as sent).
+    h.service.updateSettings({ defaultLimits: { ...DEFAULT_LIMITS, maxRounds: 99, minStake: 50, stakeIncrement: 50 } });
+    expect(h.service.createSession(req, 'create-key').session.id).toBe(first.session.id);
+    // An invalid request under a used key is still a validation error, not a replay.
+    expect(() => h.service.createSession({ player: { kind: 'manual' }, limits: { minStake: -1 } }, 'create-key')).toThrow(
+      expect.objectContaining({ code: 'validation_error' }),
+    );
+  });
+
+  it('#23: the session and its idempotency record are written by ONE repository transaction', () => {
+    const repo = openRepository(':memory:');
+    const calls: string[] = [];
+    const createSession = repo.createSession.bind(repo);
+    const createIdem = repo.createSessionIdempotent.bind(repo);
+    const putIdempotent = repo.putIdempotent.bind(repo);
+    repo.createSession = (input) => (calls.push('createSession'), createSession(input));
+    repo.putIdempotent = (scope, key, value) => (calls.push('putIdempotent'), putIdempotent(scope, key, value));
+    repo.createSessionIdempotent = (input, idem) => (calls.push('createSessionIdempotent'), createIdem(input, idem));
+    const h = harness({ repo });
+    const req = { player: { kind: 'manual' as const } };
+    const { session } = h.service.createSession(req, 'k-atomic');
+    expect(calls).toEqual(['createSessionIdempotent']);
+    expect(repo.getIdempotent('create-session', 'k-atomic')).toEqual({ sessionId: session.id, fingerprint: createSessionFingerprint(req) });
+    // A failing transaction leaves neither a session nor a record behind, so a retry creates exactly one.
+    repo.createSessionIdempotent = () => {
+      throw new GameError('internal', 'simulated crash inside the transaction');
+    };
+    expect(() => h.service.createSession(req, 'k-crash')).toThrow(/simulated crash/);
+    expect(repo.getIdempotent('create-session', 'k-crash')).toBeNull();
+    expect(h.service.listSessions()).toHaveLength(1);
+    repo.createSessionIdempotent = createIdem;
+    const retried = h.service.createSession(req, 'k-crash');
+    expect(h.service.createSession(req, 'k-crash').session.id).toBe(retried.session.id);
+    expect(h.service.listSessions()).toHaveLength(2);
+  });
+
+  it('fingerprints are canonical: key order does not matter, content does', () => {
+    const a = createSessionFingerprint({ name: 'x', player: { kind: 'ollama', model: 'm' }, limits: { maxRounds: 3, minStake: 10 } });
+    const b = createSessionFingerprint({ limits: { minStake: 10, maxRounds: 3 }, player: { model: 'm', kind: 'ollama' }, name: 'x' });
+    expect(a).toBe(b);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(createSessionFingerprint({ player: { kind: 'ollama', model: 'm2' } })).not.toBe(createSessionFingerprint({ player: { kind: 'ollama', model: 'm' } }));
+    // No name and an empty name both mean "default name".
+    expect(createSessionFingerprint({ name: '', player: { kind: 'manual' } })).toBe(createSessionFingerprint({ player: { kind: 'manual' } }));
+  });
+
+  it('#27: the round log shows credits (V$), never raw subunits', () => {
+    const h = harness({ outcomes: [17] });
+    const { session } = h.service.createSession({ player: { kind: 'manual' } }, h.key());
+    h.service.placeManualRound(session.id, [{ type: 'straight', numbers: [17], stake: 10 }], 'k-log');
+    const log = h.service.listLogs(session.id).find((l) => l.type === 'round_settled')!;
+    expect(log.message).toBe('Round 1: 17 — staked V$ 0.10, returned V$ 3.60, net +V$ 3.50');
+    const loss = harness({ outcomes: [0] });
+    const s2 = loss.service.createSession({ player: { kind: 'manual' }, limits: { startingBalance: 100, minStake: 100, stakeIncrement: 100 } }, loss.key()).session;
+    loss.service.placeManualRound(s2.id, [{ type: 'red', stake: 100 }], 'k-loss');
+    const messages = loss.service.listLogs(s2.id).map((l) => l.message);
+    expect(messages).toContain('Round 1: 0 — staked V$ 1.00, returned V$ 0.00, net −V$ 1.00');
+    expect(loss.repo.getSession(s2.id)!.message).toBe('Completed: balance V$ 0.00 is below the minimum stake of V$ 1.00.');
   });
 });
 
@@ -357,22 +440,30 @@ describe('autonomous AI runner (fake adapter fixtures)', () => {
     await expect(h.service.control(s.id, 'pause', key)).rejects.toMatchObject({ code: 'duplicate_request' });
   });
 
-  it('animation speed changes only the wait between rounds, never the number of model calls', async () => {
-    const runWith = async (speed: 'normal' | 'instant') => {
+  it('#4: the wait between rounds is roundPacingMs; the animation speed never changes it (or the call count)', async () => {
+    const runWith = async (patch: { animationSpeed?: 'normal' | 'fast' | 'instant'; roundPacingMs?: number }) => {
       const adapter = fakeAdapter();
-      const h = harness({ adapters: [adapter], presentationDelayMs: (sp) => ({ normal: 7_000, fast: 3_800, instant: 600 })[sp] });
-      h.service.updateSettings({ animationSpeed: speed });
+      // The production rule (defaultRoundPacingMs), not a test stub.
+      const h = harness({ adapters: [adapter], presentationDelayMs: defaultRoundPacingMs });
+      h.service.updateSettings(patch);
       const s = createAi(h, { maxRounds: 4 });
       await h.service.control(s.id, 'start', h.key());
       await waitUntil(() => status(h, s.id) === 'completed', 'completed');
       return { calls: adapter.calls.length, sleeps: h.sleeps };
     };
-    const normal = await runWith('normal');
-    const instant = await runWith('instant');
-    expect(normal.calls).toBe(4);
-    expect(instant.calls).toBe(4);
-    expect(normal.sleeps).toEqual([7_000, 7_000, 7_000, 7_000]);
-    expect(instant.sleeps).toEqual([600, 600, 600, 600]);
+    const normal = await runWith({ animationSpeed: 'normal' });
+    const instant = await runWith({ animationSpeed: 'instant' });
+    const fast = await runWith({ animationSpeed: 'fast' });
+    for (const r of [normal, instant, fast]) {
+      expect(r.calls).toBe(4);
+      expect(r.sleeps).toEqual([DEFAULT_ROUND_PACING_MS, DEFAULT_ROUND_PACING_MS, DEFAULT_ROUND_PACING_MS, DEFAULT_ROUND_PACING_MS]);
+    }
+    expect(DEFAULT_ROUND_PACING_MS).toBe(7_000);
+    // Changing roundPacingMs does change it (0 = no wait), with the same one call per round.
+    const quick = await runWith({ animationSpeed: 'normal', roundPacingMs: 250 });
+    expect(quick).toEqual({ calls: 4, sleeps: [250, 250, 250, 250] });
+    const none = await runWith({ roundPacingMs: 0 });
+    expect(none).toEqual({ calls: 4, sleeps: [0, 0, 0, 0] });
   });
 
   it('with allowModelStop, model "stop" completes the session with model_stop; "skip" plays a no-bet round', async () => {
@@ -764,5 +855,213 @@ describe('exports, providers and events', () => {
     await expect(h.service.control(ai.id, 'start', h.key())).rejects.toMatchObject({ code: 'invalid_state' });
     await expect(h.service.control('missing', 'start', h.key())).rejects.toMatchObject({ code: 'not_found' });
     expect(outcomeScript(3)).toHaveLength(3);
+  });
+});
+
+// ───────────────────────────── audit fixes: decisions, failures, limits, masking ─────────────────────────────
+
+describe('decision records (fake adapter fixtures)', () => {
+  it('#29: an accepted decision keeps the adapter note — masked and clipped to 300 characters; no note → null', async () => {
+    const adapter = fakeAdapter();
+    const bet = { action: 'bet' as const, bets: [{ type: 'red' as const, stake: 100 }] };
+    adapter.script.push(() => okDecision(bet, { note: `Claude Code conversation c-1, turn 2 (resumed); leaked ${FAKE_ANTHROPIC_KEY}` }));
+    adapter.script.push(() => okDecision(bet, { note: 'L'.repeat(1_000) }));
+    adapter.script.push(() => okDecision(bet)); // no note
+    const h = harness({ adapters: [adapter] });
+    const s = createAi(h, { maxRounds: 3 });
+    await h.service.control(s.id, 'start', h.key());
+    await waitUntil(() => status(h, s.id) === 'completed', 'completed');
+    const [d1, d2, d3] = [...h.service.listDecisions(s.id)].reverse();
+    expect(d1!.providerNote).toBe('Claude Code conversation c-1, turn 2 (resumed); leaked [redacted]');
+    expect(d2!.providerNote).toBe('L'.repeat(MAX_PROVIDER_NOTE_CHARS));
+    expect(MAX_PROVIDER_NOTE_CHARS).toBe(300);
+    expect(d3!.providerNote).toBeNull();
+    // The note travels with the decision everywhere (snapshot, export).
+    expect(JSON.parse(h.service.exportSession(s.id, 'json').body).decisions[0].providerNote).toMatch(/turn 2 \(resumed\)/);
+  });
+
+  it('#40: <think> reasoning is stripped from the stored raw output and never shown', async () => {
+    const adapter = fakeAdapter();
+    adapter.script.push(() => okText('<think>private chain of thought: bet red</think>\n{"action":"bet","bets":[{"type":"red","stake":100}]}'));
+    adapter.script.push(() => okText('<think>only thinking, the output budget ran out'));
+    const h = harness({ adapters: [adapter] });
+    const s = createAi(h, { maxRetries: 0, maxRounds: 5 });
+    await h.service.control(s.id, 'start', h.key());
+    await waitUntil(() => status(h, s.id) === 'paused', 'paused after the reasoning-only reply');
+    const [accepted, invalid] = [...h.service.listDecisions(s.id)].reverse();
+    expect(accepted).toMatchObject({ status: 'accepted', rawOutput: '{"action":"bet","bets":[{"type":"red","stake":100}]}' });
+    expect(invalid).toMatchObject({ status: 'invalid', rawOutput: REASONING_ONLY_OUTPUT });
+    const everything = JSON.stringify([h.service.listDecisions(s.id), h.service.getSnapshot(s.id)]) + h.service.exportSession(s.id, 'json').body;
+    expect(everything).not.toContain('chain of thought');
+    expect(everything).not.toContain('output budget ran out');
+    expect(everything).not.toContain('<think>private');
+  });
+
+  it('#33: a provider that echoes a registered secret never gets it stored, exported or returned by the API', async () => {
+    const SECRET = 'LayaEcho-fixture-9f8e7d6c5b'; // no known key shape: only the registered value can catch it
+    registerSecret(SECRET);
+    try {
+      const adapter = fakeAdapter({ kind: 'laya' });
+      // 1st attempt: invalid output that echoes the secret (raw output + retry); 2nd: accepted decision echoing it.
+      adapter.script.push(() => okText(`I will not answer in JSON. Your token is ${SECRET}`));
+      adapter.fallback = () =>
+        okDecision(
+          { action: 'bet', bets: [{ type: 'red', stake: 100 }], strategy: `echo ${SECRET}`, explanation: `I was sent ${SECRET.toLowerCase()}` },
+          { note: `routing via ${encodeURIComponent(SECRET)}` },
+        );
+      adapter.listModels = async () => [`model-${SECRET}`, 'plain-model'];
+      adapter.testConnection = async () => ({ ok: true, testedAt: '2026-09-23T12:00:00.000Z', latencyMs: 1, message: `hello ${SECRET}` });
+      const h = harness({ adapters: [adapter] });
+      const s = createAi(h, { maxRounds: 1, maxRetries: 1 }, { kind: 'laya' });
+      await h.service.control(s.id, 'start', h.key());
+      await waitUntil(() => status(h, s.id) === 'completed', 'completed');
+
+      const models = await h.service.listModels('laya');
+      expect(models).toEqual(['model-[redacted]', 'plain-model']);
+      const test = await h.service.testProvider('laya');
+      expect(test.message).toBe('hello [redacted]');
+      const decision = h.service.listDecisions(s.id)[0]!;
+      expect(decision.explanation).toBe('Strategy: echo [redacted]\nI was sent [redacted]');
+      expect(decision.providerNote).toBe('routing via [redacted]');
+
+      const everything = [
+        JSON.stringify(h.service.getSnapshot(s.id)),
+        JSON.stringify(h.service.listDecisions(s.id)),
+        JSON.stringify(h.service.listLogs(s.id)),
+        JSON.stringify(h.service.getUsage(s.id)),
+        JSON.stringify(h.service.listRounds(s.id)),
+        JSON.stringify(h.service.listProviders()),
+        JSON.stringify(h.repo.exportSession(s.id)), // what is stored
+        h.service.exportSession(s.id, 'json').body,
+        h.service.exportSession(s.id, 'csv').body,
+        JSON.stringify(models),
+        JSON.stringify(test),
+      ].join('\n');
+      expect(everything.toLowerCase()).not.toContain(SECRET.toLowerCase());
+      expect(everything).not.toContain(encodeURIComponent(SECRET));
+      expect(everything).toContain('[redacted]');
+      expect(() => JSON.parse(h.service.exportSession(s.id, 'json').body)).not.toThrow();
+    } finally {
+      clearRegisteredSecrets();
+    }
+  });
+});
+
+describe('consecutive failures (fake adapter fixtures)', () => {
+  it('#30/#32: below the limit a failed decision does NOT say "paused", waits the Retry-After, and only the last one pauses', async () => {
+    const adapter = fakeAdapter({ fallback: () => failure('rate_limited', true, { retryAfterMs: 12_000, httpStatus: 429 }) });
+    const h = harness({ adapters: [adapter] });
+    const s = createAi(h, { maxRetries: 0, maxConsecutiveFailures: 3 });
+    await h.service.control(s.id, 'start', h.key());
+    await waitUntil(() => status(h, s.id) === 'paused', 'paused');
+
+    expect(adapter.calls).toHaveLength(3);
+    // No retries inside a decision (maxRetries 0): the only waits are the two between decisions.
+    expect(h.sleeps.filter((ms) => ms > 0)).toEqual([12_000, 12_000]);
+    const failedLogs = h.service.listLogs(s.id).filter((l) => l.type === 'decision_failed');
+    expect(failedLogs).toHaveLength(2);
+    for (const l of failedLogs) {
+      expect(l.message).not.toMatch(/paused|press Start/i);
+      expect(l.message).toMatch(/keeps running; next decision in 12 s/);
+    }
+    // Decisions themselves never claim a pause; the session message does, once it is true.
+    for (const d of h.service.listDecisions(s.id)) expect(d.errorMessage).not.toMatch(/paused/i);
+    const after = h.repo.getSession(s.id)!;
+    expect(after).toMatchObject({ status: 'paused', pauseReason: 'rate_limited' });
+    expect(after.message).toMatch(/request failed after 1 attempt \(rate_limited 429\)/);
+    expect(after.message!.endsWith(PAUSED_AFTER_FAILURE)).toBe(true);
+    expect(h.service.listLogs(s.id).filter((l) => l.type === 'session_paused')).toHaveLength(1);
+  });
+
+  it('#32: without a Retry-After the wait between failed decisions is a bounded backoff (1 s, 2 s + jitter)', async () => {
+    const adapter = fakeAdapter({ fallback: () => failure('server_error', true, { httpStatus: 503 }) });
+    const h = harness({ adapters: [adapter] });
+    const s = createAi(h, { maxRetries: 0, maxConsecutiveFailures: 3 });
+    await h.service.control(s.id, 'start', h.key());
+    await waitUntil(() => status(h, s.id) === 'paused', 'paused');
+    const waits = h.sleeps.filter((ms) => ms > 0);
+    expect(waits).toHaveLength(2);
+    expect(waits[0]).toBeGreaterThanOrEqual(1_000);
+    expect(waits[0]).toBeLessThan(1_250);
+    expect(waits[1]).toBeGreaterThanOrEqual(2_000);
+    expect(waits[1]).toBeLessThan(2_500);
+  });
+
+  it('#30: a usable decision after a failure resets the count; the session keeps playing', async () => {
+    const adapter = fakeAdapter();
+    adapter.script.push(() => failure('unavailable', true));
+    const h = harness({ adapters: [adapter] });
+    const s = createAi(h, { maxRetries: 0, maxConsecutiveFailures: 2, maxRounds: 2 });
+    await h.service.control(s.id, 'start', h.key());
+    await waitUntil(() => status(h, s.id) === 'completed', 'completed');
+    expect(h.repo.getSession(s.id)).toMatchObject({ endReason: 'max_rounds', roundsPlayed: 2 });
+    expect(adapter.calls).toHaveLength(3);
+    expect(h.service.listLogs(s.id).some((l) => /paused/i.test(l.message))).toBe(false);
+  });
+});
+
+describe('limits are checked before pausing (fixtures)', () => {
+  it('#37: Next round (step) on the last allowed round completes the session instead of pausing', async () => {
+    const h = harness();
+    const s = h.service.createSession({ player: { kind: 'demo' }, limits: { maxRounds: 1 } }, h.key()).session;
+    await h.service.control(s.id, 'step', h.key());
+    await waitUntil(() => status(h, s.id) !== 'running', 'step finished');
+    expect(h.repo.getSession(s.id)).toMatchObject({ status: 'completed', endReason: 'max_rounds', pauseReason: null, roundsPlayed: 1 });
+    // A step that leaves rounds to play still pauses (step_complete).
+    const more = h.service.createSession({ player: { kind: 'demo' }, limits: { maxRounds: 3 } }, h.key()).session;
+    await h.service.control(more.id, 'step', h.key());
+    await waitUntil(() => status(h, more.id) !== 'running', 'step finished');
+    expect(h.repo.getSession(more.id)).toMatchObject({ status: 'paused', pauseReason: 'step_complete', roundsPlayed: 1 });
+  });
+
+  it('#37: Pause after round when the balance can no longer cover the minimum stake completes the session', async () => {
+    const adapter = fakeAdapter();
+    const d = deferred<ProviderCallResult>();
+    adapter.script.push(() => d.promise);
+    const h = harness({ adapters: [adapter], outcomes: [0] });
+    const s = createAi(h, { startingBalance: 100, minStake: 100, stakeIncrement: 100 });
+    await h.service.control(s.id, 'start', h.key());
+    await waitUntil(() => adapter.calls.length === 1, 'first call');
+    expect((await h.service.control(s.id, 'pause', h.key())).session.status).toBe('pause_requested');
+    d.resolve(betDecision([{ type: 'red', stake: 100 }])); // 0 wins: the whole balance is lost
+    await waitUntil(() => status(h, s.id) !== 'pause_requested', 'round finished');
+    expect(h.repo.getSession(s.id)).toMatchObject({ status: 'completed', endReason: 'insufficient_balance', pauseReason: null, balance: 0 });
+    expect(adapter.calls).toHaveLength(1);
+  });
+
+  it('#37: Pause after the round that reaches maxRounds completes the session', async () => {
+    const adapter = fakeAdapter();
+    const d = deferred<ProviderCallResult>();
+    adapter.script.push(() => d.promise);
+    const h = harness({ adapters: [adapter] });
+    const s = createAi(h, { maxRounds: 1 });
+    await h.service.control(s.id, 'start', h.key());
+    await waitUntil(() => adapter.calls.length === 1, 'first call');
+    await h.service.control(s.id, 'pause', h.key());
+    d.resolve(betDecision([{ type: 'red', stake: 100 }]));
+    await waitUntil(() => status(h, s.id) !== 'pause_requested', 'round finished');
+    expect(h.repo.getSession(s.id)).toMatchObject({ status: 'completed', endReason: 'max_rounds' });
+  });
+});
+
+describe('input validation', () => {
+  it('#31: an invalid Claude Code CLI model is refused at session creation and in settings (validation_error)', () => {
+    const h = harness();
+    for (const model of ['--tools=Bash', '-x', '.hidden']) {
+      expect(() => h.service.createSession({ player: { kind: 'claude-cli', model } }, h.key())).toThrow(
+        expect.objectContaining({ code: 'validation_error', message: expect.stringMatching(/Claude Code CLI model/) }),
+      );
+      expect(() => h.service.updateSettings({ players: { 'claude-cli': { kind: 'claude-cli', model } } })).toThrow(
+        expect.objectContaining({ code: 'validation_error' }),
+      );
+    }
+    expect(h.service.listSessions()).toHaveLength(0);
+    expect(h.service.getSettings().players['claude-cli']).toBeUndefined();
+    // Aliases and model ids are accepted; other providers keep their own (looser) rules.
+    expect(h.service.createSession({ player: { kind: 'claude-cli', model: 'haiku' } }, h.key()).session.player.model).toBe('haiku');
+    expect(h.service.updateSettings({ players: { 'claude-cli': { kind: 'claude-cli', model: 'claude-sonnet-4-6[1m]' } } }).players['claude-cli']!.model).toBe(
+      'claude-sonnet-4-6[1m]',
+    );
+    expect(h.service.createSession({ player: { kind: 'ollama', model: '-weird:tag' } }, h.key()).session.player.model).toBe('-weird:tag');
   });
 });

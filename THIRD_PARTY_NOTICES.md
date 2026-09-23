@@ -45,12 +45,16 @@ packages in `node_modules/`.
 | zod | MIT |
 | @anthropic-ai/sdk | MIT |
 | lucide-react | ISC |
-| @fontsource-variable/inter (Inter typeface) | OFL-1.1 (font), MIT (package) |
-| @fontsource-variable/jetbrains-mono (JetBrains Mono typeface) | OFL-1.1 (font), MIT (package) |
+| @fontsource-variable/inter (Inter typeface) | OFL-1.1 (SIL Open Font License 1.1 — the licence the package declares; Copyright 2016 The Inter Project Authors) |
+| @fontsource-variable/jetbrains-mono (JetBrains Mono typeface) | OFL-1.1 (SIL Open Font License 1.1 — the licence the package declares; Copyright 2020 The JetBrains Mono Project Authors) |
 | tailwindcss, @tailwindcss/vite | MIT |
 | vite, @vitejs/plugin-react, vitest | MIT |
 | typescript | Apache-2.0 |
 | tsx, concurrently, jsdom, @testing-library/* | MIT |
+
+The two typefaces are bundled into the production build (`dist/web/assets/*.woff2`, not committed). Their full
+OFL-1.1 text ships with the packages: `node_modules/@fontsource-variable/inter/LICENSE` and
+`node_modules/@fontsource-variable/jetbrains-mono/LICENSE`.
 
 ## Optional components (not installed by default)
 

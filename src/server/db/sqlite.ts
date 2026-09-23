@@ -7,6 +7,10 @@
  *  - Methods marked [TX] in the contract run inside ONE `BEGIN IMMEDIATE` transaction and
  *    either fully apply or roll back and throw a GameError. Non-GameError failures (SQLite
  *    constraint/trigger errors) are rolled back and re-thrown as GameError with `cause` set.
+ *  - Transaction state is tracked HERE (set by BEGIN, cleared by COMMIT/ROLLBACK), never read
+ *    from DatabaseSync#isTransaction / #isOpen, which older Node 22 releases do not have. A
+ *    failed transaction is always rolled back; a successful one (including a read snapshot) is
+ *    always committed, so no transaction is ever left open behind a later write.
  *  - A recorded outcome is never replaced; a round is settled at most once (enforced both here
  *    and by triggers / unique indexes in schema.ts).
  *  - Nothing secret is stored by construction: PlayerConfig is reduced to its known non-secret
@@ -136,6 +140,8 @@ interface DecisionRow {
   started_at: string;
   completed_at: string | null;
   latency_ms: number | null;
+  /** Added by migration 2. */
+  provider_note: string | null;
 }
 
 interface UsageRow {
@@ -329,6 +335,7 @@ function toDecision(r: DecisionRow): DecisionRecord {
     startedAt: r.started_at,
     completedAt: r.completed_at,
     latencyMs: r.latency_ms,
+    providerNote: r.provider_note ?? null,
   };
 }
 
@@ -380,6 +387,11 @@ function toLog(r: LogRow): LogEntry {
   };
 }
 
+/**
+ * Values for the decisions columns in this order: id, session_id, round_number, epoch,
+ * provider_kind, model, status, action, bets, explanation, raw_output, validation_errors,
+ * error_code, error_message, attempts, started_at, completed_at, latency_ms, provider_note.
+ */
 function decisionParams(d: DecisionRecord): SQLInputValue[] {
   return [
     d.id,
@@ -400,7 +412,38 @@ function decisionParams(d: DecisionRecord): SQLInputValue[] {
     d.startedAt,
     d.completedAt ?? null,
     d.latencyMs ?? null,
+    typeof d.providerNote === 'string' ? d.providerNote : null,
   ];
+}
+
+/**
+ * Largest amount a committed bet slip can return for any single winning number 0..36
+ * (returned = stake × (payout + 1) for every bet covering that number). Plain number math: an
+ * unsafe result is only compared against Number.MAX_SAFE_INTEGER, never stored.
+ */
+function maxPossibleReturn(bets: readonly ResolvedBet[]): number {
+  let best = 0;
+  for (let n = 0; n <= 36; n++) {
+    let total = 0;
+    for (const bet of bets) if (bet.numbers.includes(n)) total += bet.stake * (bet.payout + 1);
+    if (total > best) best = total;
+  }
+  return best;
+}
+
+/** Stored value of a create-session idempotency record (older records have no fingerprint). */
+function parseCreateRecord(text: string): { sessionId: string | null; fingerprint: string | null } {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    value = null;
+  }
+  const rec = (value && typeof value === 'object' ? value : {}) as { sessionId?: unknown; fingerprint?: unknown };
+  return {
+    sessionId: typeof rec.sessionId === 'string' && rec.sessionId.length > 0 ? rec.sessionId : null,
+    fingerprint: typeof rec.fingerprint === 'string' ? rec.fingerprint : null,
+  };
 }
 
 // ───────────────────────────── repository ─────────────────────────────
@@ -410,7 +453,15 @@ class SqliteRepository implements Repository {
   private readonly statements = new Map<string, StatementSync>();
   private readonly now: () => Date;
   private readonly appVersion: string;
-  private inTransaction = false;
+  /** True while tx() / readSnapshot() is running (nesting guard). */
+  private txActive = false;
+  /**
+   * True from a successful BEGIN until its COMMIT or ROLLBACK has run. Tracked here instead of
+   * DatabaseSync#isTransaction, which does not exist before Node 22.16.
+   */
+  private txOpen = false;
+  /** Tracked here instead of DatabaseSync#isOpen, which does not exist before Node 22.15. */
+  private closed = false;
 
   constructor(dbPath: string, opts: OpenRepositoryOptions) {
     this.now = opts.now ?? (() => new Date());
@@ -433,6 +484,7 @@ class SqliteRepository implements Repository {
       }
       this.migrate();
     } catch (err) {
+      this.closed = true;
       this.db.close();
       throw err;
     }
@@ -461,49 +513,72 @@ class SqliteRepository implements Repository {
     return this.stmt(sql).run(...params);
   }
 
+  // Transaction primitives. The open/closed state is tracked in `txOpen` (see the class fields):
+  // set only after BEGIN succeeded, cleared by COMMIT or by the rollback below.
+
+  private begin(sql: 'BEGIN' | 'BEGIN IMMEDIATE'): void {
+    this.db.exec(sql);
+    this.txOpen = true;
+  }
+
+  private commit(): void {
+    this.db.exec('COMMIT');
+    this.txOpen = false;
+  }
+
   /**
-   * Run `fn` inside BEGIN IMMEDIATE … COMMIT. Any throw rolls back. Nested calls are a
-   * programming error and are refused. Non-GameError failures are wrapped (cause preserved).
+   * Roll back the transaction this repository opened, if any. Never throws: SQLite may already
+   * have rolled back on its own (e.g. disk full / I/O error, or a COMMIT that failed that way),
+   * and the original error is more useful than a failed ROLLBACK.
    */
-  private tx<T>(op: string, fn: () => T): T {
-    if (this.inTransaction) throw new Error(`Nested transaction attempted in ${op}`);
-    this.inTransaction = true;
+  private rollbackQuietly(): void {
+    if (!this.txOpen) return;
+    this.txOpen = false;
     try {
-      this.db.exec('BEGIN IMMEDIATE');
-      try {
-        const result = fn();
-        this.db.exec('COMMIT');
-        return result;
-      } catch (err) {
-        if (this.db.isTransaction) {
-          try {
-            this.db.exec('ROLLBACK');
-          } catch {
-            // The original error is more useful than a failed rollback.
-          }
-        }
-        throw err;
-      }
-    } catch (err) {
-      throw asGameError(op, err);
-    } finally {
-      this.inTransaction = false;
+      this.db.exec('ROLLBACK');
+    } catch {
+      // Nothing left to undo.
     }
   }
 
-  /** Consistent read snapshot (deferred transaction) for multi-query reads such as exports. */
-  private readSnapshot<T>(fn: () => T): T {
-    if (this.inTransaction) return fn();
-    this.inTransaction = true;
+  /**
+   * Run `fn` inside BEGIN IMMEDIATE … COMMIT. Any throw (from `fn` or from COMMIT) rolls back.
+   * Nested calls are a programming error and are refused. Non-GameError failures are wrapped
+   * (cause preserved).
+   */
+  private tx<T>(op: string, fn: () => T): T {
+    if (this.txActive) throw new Error(`Nested transaction attempted in ${op}`);
+    this.txActive = true;
     try {
-      this.db.exec('BEGIN');
-      try {
-        return fn();
-      } finally {
-        if (this.db.isTransaction) this.db.exec('COMMIT');
-      }
+      this.begin('BEGIN IMMEDIATE');
+      const result = fn();
+      this.commit();
+      return result;
+    } catch (err) {
+      this.rollbackQuietly();
+      throw asGameError(op, err);
     } finally {
-      this.inTransaction = false;
+      this.txActive = false;
+    }
+  }
+
+  /**
+   * Consistent read snapshot (deferred transaction) for multi-query reads such as exports.
+   * Always ends the snapshot: COMMIT on success, ROLLBACK on error.
+   */
+  private readSnapshot<T>(fn: () => T): T {
+    if (this.txActive) return fn();
+    this.txActive = true;
+    try {
+      this.begin('BEGIN');
+      const result = fn();
+      this.commit();
+      return result;
+    } catch (err) {
+      this.rollbackQuietly();
+      throw err;
+    } finally {
+      this.txActive = false;
     }
   }
 
@@ -520,17 +595,17 @@ class SqliteRepository implements Repository {
       return v;
     };
     while (version() < SCHEMA_VERSION) {
-      this.db.exec('BEGIN IMMEDIATE');
       try {
+        this.begin('BEGIN IMMEDIATE');
         // Re-read under the write lock: another process may have migrated in the meantime.
         const v = version();
         if (v < SCHEMA_VERSION) {
           this.db.exec(MIGRATIONS[v]!);
           this.db.exec(`PRAGMA user_version = ${v + 1}`);
         }
-        this.db.exec('COMMIT');
+        this.commit();
       } catch (err) {
-        if (this.db.isTransaction) this.db.exec('ROLLBACK');
+        this.rollbackQuietly();
         throw err;
       }
     }
@@ -564,35 +639,94 @@ class SqliteRepository implements Repository {
 
   // ── sessions ──
 
-  createSession(input: NewSession): SessionInfo {
+  /** Validate a NewSession before any transaction starts. */
+  private prepareNewSession(input: NewSession): { id: string; start: number; player: PlayerConfig } {
     const id = assertString(input.id, 'session id');
     const start = assertSubunits(input.limits?.startingBalance, 'limits.startingBalance', { min: 0 });
     const player = sanitizePlayer(input.player);
-    return this.tx('createSession', () => {
-      if (this.sessionRow(id)) throw new GameError('duplicate_request', `Session ${id} already exists`);
-      this.run(
-        `INSERT INTO sessions (id, name, mode, player, status, phase, pause_reason, end_reason, message,
-           balance, starting_balance, rounds_played, limits, epoch, runtime_ms, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'ready', 'ready', NULL, NULL, NULL, ?, ?, 0, ?, 0, 0, ?, ?)`,
-        id,
-        input.name,
-        input.mode,
-        json(player),
-        start,
-        start,
-        json(input.limits),
-        input.createdAt,
-        input.createdAt,
+    return { id, start, player };
+  }
+
+  /** Session row + ledger 'session_start'. Must run inside tx(). */
+  private insertSessionRows(input: NewSession, p: { id: string; start: number; player: PlayerConfig }): SessionInfo {
+    if (this.sessionRow(p.id)) throw new GameError('duplicate_request', `Session ${p.id} already exists`);
+    this.run(
+      `INSERT INTO sessions (id, name, mode, player, status, phase, pause_reason, end_reason, message,
+         balance, starting_balance, rounds_played, limits, epoch, runtime_ms, created_at, updated_at)
+       VALUES (?, ?, ?, ?, 'ready', 'ready', NULL, NULL, NULL, ?, ?, 0, ?, 0, 0, ?, ?)`,
+      p.id,
+      input.name,
+      input.mode,
+      json(p.player),
+      p.start,
+      p.start,
+      json(input.limits),
+      input.createdAt,
+      input.createdAt,
+    );
+    this.run(
+      `INSERT INTO ledger (session_id, round_id, kind, amount, balance_after, created_at)
+       VALUES (?, NULL, 'session_start', ?, ?, ?)`,
+      p.id,
+      p.start,
+      p.start,
+      input.createdAt,
+    );
+    return toSession(this.requireSessionRow(p.id));
+  }
+
+  createSession(input: NewSession): SessionInfo {
+    const prepared = this.prepareNewSession(input);
+    return this.tx('createSession', () => this.insertSessionRows(input, prepared));
+  }
+
+  /**
+   * One BEGIN IMMEDIATE transaction: session + ledger 'session_start' + the idempotency record
+   * { sessionId, fingerprint } under (scope, key), so a crash can never leave a session without
+   * its record (or the reverse). A key that already exists writes nothing and returns the session
+   * it points to with created=false and the STORED fingerprint. Records written before
+   * fingerprints existed carry none; they report the caller's fingerprint (they were accepted for
+   * any body before, and still are).
+   */
+  createSessionIdempotent(
+    input: NewSession,
+    idem: { scope: string; key: string; fingerprint: string },
+  ): { session: SessionInfo; created: boolean; fingerprint: string } {
+    const scope = assertString(idem?.scope, 'idempotency scope');
+    const key = assertString(idem?.key, 'idempotency key');
+    if (typeof idem.fingerprint !== 'string') {
+      throw new GameError('validation_error', 'idempotency fingerprint must be a string');
+    }
+    const fingerprint = idem.fingerprint;
+    const prepared = this.prepareNewSession(input);
+
+    return this.tx('createSessionIdempotent', () => {
+      // Checked under the write lock, so no other connection can insert the key in between.
+      const prior = this.get<{ response: string }>(
+        'SELECT response FROM idempotency WHERE scope = ? AND key = ?',
+        scope,
+        key,
       );
+      if (prior) {
+        const stored = parseCreateRecord(prior.response);
+        const row = stored.sessionId ? this.sessionRow(stored.sessionId) : undefined;
+        if (!row) {
+          throw new GameError('internal', 'The stored idempotency record does not point to an existing session', {
+            scope,
+            key,
+          });
+        }
+        return { session: toSession(row), created: false, fingerprint: stored.fingerprint ?? fingerprint };
+      }
+      const session = this.insertSessionRows(input, prepared);
       this.run(
-        `INSERT INTO ledger (session_id, round_id, kind, amount, balance_after, created_at)
-         VALUES (?, NULL, 'session_start', ?, ?, ?)`,
-        id,
-        start,
-        start,
-        input.createdAt,
+        'INSERT INTO idempotency (scope, key, response, created_at) VALUES (?, ?, ?, ?)',
+        scope,
+        key,
+        json({ sessionId: session.id, fingerprint }),
+        this.iso(),
       );
-      return toSession(this.requireSessionRow(id));
+      return { session, created: true, fingerprint };
     });
   }
 
@@ -715,6 +849,18 @@ class SqliteRepository implements Repository {
       )!;
       const balanceAfterStake = session.balance - totalStake;
 
+      // A round is only committed if EVERY possible outcome can be settled: a win that pushed the
+      // balance past Number.MAX_SAFE_INTEGER could never be credited exactly, and the session
+      // would be stuck with an unsettleable round. (The bet-slip rules refuse this up front too.)
+      const bestCase = balanceAfterStake + maxPossibleReturn(input.bets);
+      if (!Number.isSafeInteger(bestCase)) {
+        throw new GameError(
+          'limit_exceeded',
+          'These bets could win more than the largest balance Luck can record exactly. Lower the stakes.',
+          { balance: session.balance, totalStake, maxBalance: Number.MAX_SAFE_INTEGER },
+        );
+      }
+
       this.run(
         `INSERT INTO rounds (id, session_id, seq, status, source, decision_id, idempotency_key,
            total_stake, balance_before, committed_at)
@@ -805,7 +951,16 @@ class SqliteRepository implements Repository {
 
       const session = this.requireSessionRow(row.session_id);
       const newBalance = session.balance + settlement.totalReturned;
-      assertSubunits(newBalance, 'balance after settlement', { min: 0 });
+      // Not a request problem (the bets were accepted and the outcome is recorded), so this is an
+      // internal error (HTTP 500), never a validation error.
+      if (!Number.isSafeInteger(newBalance) || newBalance < 0) {
+        throw new GameError('internal', 'Settlement rejected: the new balance cannot be recorded exactly', {
+          roundId,
+          balance: session.balance,
+          totalReturned: settlement.totalReturned,
+          maxBalance: Number.MAX_SAFE_INTEGER,
+        });
+      }
 
       bets.forEach((bet, idx) => {
         const result = settlement.bets.find((b) => b.key === bet.key)!;
@@ -891,8 +1046,8 @@ class SqliteRepository implements Repository {
       this.run(
         `INSERT INTO decisions (id, session_id, round_number, epoch, provider_kind, model, status, action, bets,
            explanation, raw_output, validation_errors, error_code, error_message, attempts, started_at,
-           completed_at, latency_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           completed_at, latency_ms, provider_note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ...decisionParams(rec),
       );
     } catch (err) {
@@ -912,7 +1067,7 @@ class SqliteRepository implements Repository {
       this.run(
         `UPDATE decisions SET round_number = ?, epoch = ?, provider_kind = ?, model = ?, status = ?, action = ?,
            bets = ?, explanation = ?, raw_output = ?, validation_errors = ?, error_code = ?, error_message = ?,
-           attempts = ?, started_at = ?, completed_at = ?, latency_ms = ?
+           attempts = ?, started_at = ?, completed_at = ?, latency_ms = ?, provider_note = ?
          WHERE id = ?`,
         ...p.slice(2),
         id,
@@ -1083,8 +1238,10 @@ class SqliteRepository implements Repository {
   }
 
   close(): void {
-    if (this.db.isOpen) this.db.close();
+    if (this.closed) return;
+    this.closed = true;
     this.statements.clear();
+    this.db.close();
   }
 }
 

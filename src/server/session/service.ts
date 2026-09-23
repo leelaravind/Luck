@@ -5,12 +5,11 @@
  * The backend is authoritative: every bet is validated here, every outcome is drawn here (only
  * after the bets are committed) and every balance change goes through the repository ledger.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   AI_PROVIDER_KINDS,
   GameError,
   type AiProviderKind,
-  type AnimationSpeed,
   type AppSettings,
   type BetInput,
   type ConnectionTestResult,
@@ -32,12 +31,13 @@ import {
   type UsageSummary,
 } from '../../shared/contracts.js';
 import { betKey, validateBetSlip } from '../../shared/bets.js';
+import { formatCredits } from '../../shared/money.js';
 import { createCryptoOutcomeSource } from '../engine/rng.js';
 import { toCsvExport, toJsonExport } from '../db/export.js';
 import { redact } from '../redact.js';
 import { createDefaultAdapters, providerDefaults, resolveProviderConfig, serverGate } from '../providers/registry.js';
-import type { AppConfig, GameService, OutcomeSource, ProviderAdapter, Repository, SessionPatch } from '../types.js';
-import { LATE_GIVE_UP_MS, resolvePricing } from './aiDecision.js';
+import type { AppConfig, GameService, OutcomeSource, ProviderAdapter, Repository, SessionExport, SessionPatch } from '../types.js';
+import { LATE_GIVE_UP_MS, sessionPricing } from './aiDecision.js';
 import { idlePhase, type SessionCore, type SleepFn } from './core.js';
 import { createDemoPlayer, DEMO_PLAYER_LABEL } from './demoPlayer.js';
 import { createEventHub } from './events.js';
@@ -54,15 +54,13 @@ import {
 } from './settings.js';
 import { summarizeUsage } from './usage.js';
 
-/** Presentation wait between autonomous rounds (lets the wheel animation finish). */
-export const PRESENTATION_DELAY_MS: Readonly<Record<AnimationSpeed, number>> = Object.freeze({
-  normal: 7_000,
-  fast: 3_800,
-  instant: 600,
-});
-
-export function defaultPresentationDelayMs(speed: AnimationSpeed): number {
-  return PRESENTATION_DELAY_MS[speed] ?? PRESENTATION_DELAY_MS.normal;
+/**
+ * Server wait between autonomous rounds: the user's roundPacingMs setting. Deliberately NOT derived
+ * from the animation speed (presentation only), so the animation never changes how often a model is
+ * asked for a decision.
+ */
+export function defaultRoundPacingMs(settings: AppSettings): number {
+  return settings.roundPacingMs;
 }
 
 /** Timeout for connection tests / model listing started from the UI. */
@@ -70,6 +68,8 @@ const PROVIDER_META_TIMEOUT_MS = 20_000;
 /** How long shutdown() waits for runners / late results. */
 const SHUTDOWN_WAIT_MS = 3_000;
 const MAX_IDEMPOTENCY_KEY = 200;
+/** Idempotency scope of POST /api/sessions. */
+const CREATE_SESSION_SCOPE = 'create-session';
 const RECENT_ROUNDS = 20;
 const CONTROL_ACTIONS: readonly ControlAction[] = ['start', 'pause', 'stop', 'step'];
 
@@ -80,7 +80,8 @@ export interface GameServiceDeps {
   outcomeSource?: OutcomeSource;
   now?: () => Date;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
-  presentationDelayMs?: (speed: AnimationSpeed) => number;
+  /** Wait between autonomous rounds for the given settings (tests inject 0); default roundPacingMs. */
+  presentationDelayMs?: (settings: AppSettings) => number;
 }
 
 function modeFor(kind: PlayerConfig['kind']): SessionMode {
@@ -118,6 +119,48 @@ function missingCapabilities(kind: AiProviderKind): ProviderCapabilities {
   };
 }
 
+/** JSON with object keys sorted at every level (undefined members dropped): a stable text form of a value. */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return `[${value.map((v) => (v === undefined ? 'null' : canonicalJson(v))).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(',')}}`;
+}
+
+/**
+ * Fingerprint of a VALIDATED create-session request (name, player, limits as sent — before the
+ * settings defaults are merged, so a retry stays a replay even if the defaults change meanwhile).
+ */
+export function createSessionFingerprint(req: CreateSessionRequest): string {
+  const name = typeof req.name === 'string' && req.name.length > 0 ? req.name : null;
+  return createHash('sha256').update(canonicalJson({ name, player: req.player, limits: req.limits ?? {} })).digest('hex');
+}
+
+/** Mask secrets in every text field of a decision (defence in depth: callers redact too). */
+function redactDecisionText<T extends Partial<DecisionRecord>>(d: T): T {
+  const out: T = { ...d };
+  for (const k of ['explanation', 'rawOutput', 'errorMessage', 'providerNote'] as const) {
+    const v = out[k];
+    if (typeof v === 'string') (out as Partial<DecisionRecord>)[k] = redact(v);
+  }
+  if (Array.isArray(out.validationErrors)) out.validationErrors = out.validationErrors.map((e) => redact(String(e)));
+  return out;
+}
+
+/** Mask secrets in every string of an export (a final pass; stored text is already masked). */
+function redactDeep<T>(value: T): T {
+  if (typeof value === 'string') return redact(value) as T;
+  if (Array.isArray(value)) return value.map((v) => redactDeep(v)) as T;
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = redactDeep(v);
+    return out as T;
+  }
+  return value;
+}
+
 /** Canonical "key=stake" signature of a bet slip (identical positions merged), or null when unreadable. */
 function slipSignature(bets: readonly { key?: string; stake: number }[] | unknown): string | null {
   if (!Array.isArray(bets)) return null;
@@ -139,7 +182,7 @@ export function createGameService(deps: GameServiceDeps): GameService {
   const outcomeSource = deps.outcomeSource ?? createCryptoOutcomeSource();
   const now = deps.now ?? (() => new Date());
   const sleep: SleepFn = deps.sleep ?? defaultSleep;
-  const presentationDelayMs = deps.presentationDelayMs ?? defaultPresentationDelayMs;
+  const presentationDelayMs = deps.presentationDelayMs ?? defaultRoundPacingMs;
   const hub = createEventHub();
   const demoPlayer = createDemoPlayer();
   const lastTests = new Map<AiProviderKind, ConnectionTestResult>();
@@ -175,7 +218,7 @@ export function createGameService(deps: GameServiceDeps): GameService {
       else if (adapter?.capabilities.reportsCost) defaultBasis = 'provider-reported';
       else {
         const cfg = resolveProviderConfig(session.player.kind as AiProviderKind, session.player, config);
-        defaultBasis = resolvePricing(core, session.player.kind as AiProviderKind, session.player, cfg.model) ? 'estimated-from-pricing' : 'unknown';
+        defaultBasis = sessionPricing(core, session.player.kind as AiProviderKind, session.player, cfg.model) ? 'estimated-from-pricing' : 'unknown';
       }
     }
     return summarizeUsage(records, { budgetMicros: session.limits.budgetMicros, paid, defaultBasis });
@@ -256,15 +299,15 @@ export function createGameService(deps: GameServiceDeps): GameService {
     },
 
     insertDecision(rec) {
-      repo.insertDecision(rec);
-      const stored = repo.getDecision(rec.id) ?? rec;
+      const clean = redactDecisionText(rec);
+      repo.insertDecision(clean);
+      const stored = repo.getDecision(rec.id) ?? clean;
       emit(rec.sessionId, { type: 'decision', decision: stored });
       return stored;
     },
 
     updateDecision(id, patch) {
-      const clean = patch.errorMessage ? { ...patch, errorMessage: redact(patch.errorMessage) } : patch;
-      const d = repo.updateDecision(id, clean);
+      const d = repo.updateDecision(id, redactDecisionText(patch));
       emit(d.sessionId, { type: 'decision', decision: d });
       return d;
     },
@@ -351,7 +394,7 @@ export function createGameService(deps: GameServiceDeps): GameService {
       core.updateSession(sessionId, {
         status: 'completed',
         endReason: 'insufficient_balance',
-        message: `Completed: balance ${s.balance} is below the minimum stake of ${l.minStake} subunits.`,
+        message: `Completed: balance ${formatCredits(s.balance)} is below the minimum stake of ${formatCredits(l.minStake)}.`,
       });
       core.log(sessionId, 'info', 'session_completed', 'Balance is below the minimum stake');
     }
@@ -431,7 +474,9 @@ export function createGameService(deps: GameServiceDeps): GameService {
       const cfg = resolvedFor(adapter.kind, player);
       const t = withTimeout(PROVIDER_META_TIMEOUT_MS);
       try {
-        return await adapter.listModels(cfg, t.signal);
+        // Provider-supplied text: masked like every other provider output before it reaches the UI.
+        const models = await adapter.listModels(cfg, t.signal);
+        return models.map((m) => redact(String(m)));
       } catch (err) {
         if (err instanceof GameError) throw new GameError(err.code, redact(err.message), err.details);
         throw new GameError('provider_unavailable', `Could not list models: ${redact(err instanceof Error ? err.message : String(err))}`);
@@ -454,10 +499,29 @@ export function createGameService(deps: GameServiceDeps): GameService {
 
     createSession(req: CreateSessionRequest, idempotencyKey: string) {
       const key = requireKey(idempotencyKey);
-      const prior = repo.getIdempotent('create-session', key) as { sessionId?: string } | null;
-      if (prior?.sessionId && repo.getSession(prior.sessionId)) return buildSnapshot(prior.sessionId);
-
       const parsed = validateCreateSessionRequest(req);
+      const fingerprint = createSessionFingerprint(parsed);
+
+      // The same key must carry the same request: a replay returns the first session, a different
+      // request under that key is a client error (409), never silently answered with the old session.
+      const replay = (sessionId: string, storedFingerprint: string | null) => {
+        if (storedFingerprint !== null && storedFingerprint !== fingerprint) {
+          throw new GameError(
+            'duplicate_request',
+            'This Idempotency-Key was already used to create a session with a different request; no new session was created',
+            { sessionId },
+          );
+        }
+        return buildSnapshot(sessionId);
+      };
+      // Checked before the limits are merged with the current defaults, so a genuine retry replays
+      // even if the defaults changed in between. (Records written before fingerprints existed carry
+      // none and are treated as replays.)
+      const prior = repo.getIdempotent(CREATE_SESSION_SCOPE, key) as { sessionId?: unknown; fingerprint?: unknown } | null;
+      if (prior && typeof prior.sessionId === 'string' && repo.getSession(prior.sessionId)) {
+        return replay(prior.sessionId, typeof prior.fingerprint === 'string' ? prior.fingerprint : null);
+      }
+
       const settings = loadSettings(repo);
       const limits = validateLimits({ ...settings.defaultLimits, ...(parsed.limits ?? {}) });
       const player = parsed.player;
@@ -465,8 +529,13 @@ export function createGameService(deps: GameServiceDeps): GameService {
       const id = randomUUID();
       const name = parsed.name && parsed.name.length > 0 ? parsed.name : defaultName(player);
 
-      repo.createSession({ id, name, mode, player, limits, createdAt: nowIso() });
-      repo.putIdempotent('create-session', key, { sessionId: id });
+      // Session + idempotency record in ONE transaction: a crash can never leave a session without
+      // its record (which would let a retry create a second one).
+      const created = repo.createSessionIdempotent(
+        { id, name, mode, player, limits, createdAt: nowIso() },
+        { scope: CREATE_SESSION_SCOPE, key, fingerprint },
+      );
+      if (!created.created) return replay(created.session.id, created.fingerprint);
       if (mode === 'ai') rememberPlayer(repo, player);
       core.log(id, 'info', 'session_created', `Session created (${mode}${mode === 'ai' ? `: ${player.kind}${player.model ? ` ${player.model}` : ''}` : ''})`);
       return buildSnapshot(id);
@@ -509,7 +578,8 @@ export function createGameService(deps: GameServiceDeps): GameService {
         sessionId,
         'info',
         'round_settled',
-        `Round ${round.seq}: ${round.winningNumber} — staked ${round.totalStake}, returned ${round.totalReturned ?? 0}, net ${round.net ?? 0}`,
+        `Round ${round.seq}: ${round.winningNumber} — staked ${formatCredits(round.totalStake)}, returned ${formatCredits(round.totalReturned ?? 0)}, ` +
+          `net ${formatCredits(round.net ?? 0, { sign: true })}`,
       );
       completeManualIfLimited(sessionId);
       const response: ManualRoundResponse = { round, snapshot: buildSnapshot(sessionId) };
@@ -574,7 +644,9 @@ export function createGameService(deps: GameServiceDeps): GameService {
     exportSession(sessionId, format) {
       requireSession(sessionId);
       if (format !== 'json' && format !== 'csv') throw new GameError('validation_error', 'format must be json or csv');
-      const data = repo.exportSession(sessionId);
+      // Final masking pass over every string (stored text is masked already; this also covers rows
+      // written by older versions). Done on the data, not the serialised body, so JSON/CSV stay valid.
+      const data: SessionExport = redactDeep(repo.exportSession(sessionId));
       const date = nowIso().slice(0, 10);
       const safeId = sessionId.replace(/[^A-Za-z0-9-]/g, '');
       return format === 'json'

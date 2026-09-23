@@ -5,12 +5,14 @@ import type { LastError } from '../../state/luckReducer';
 import { Button } from '../common/Button';
 import { InlineError } from '../common/InlineError';
 import { SelectField } from '../common/SelectField';
+import { TextField } from '../common/TextField';
 import { LimitsEditor } from './LimitsEditor';
 import { PricingEditor } from './PricingEditor';
 
 /**
- * App settings (PUT /api/settings): default limits for NEW sessions, presentation preferences and pricing
- * assumptions. Animation speed is presentation only and never changes how often models are called.
+ * App settings (PUT /api/settings): default limits for NEW sessions, presentation preferences, the pause
+ * between autonomous rounds and pricing assumptions. The pause (AppSettings.roundPacingMs) is what sets how
+ * often a model is asked for a decision; animation speed only changes the wheel.
  */
 export interface SettingsPanelProps {
   readonly form: SettingsForm;
@@ -24,7 +26,7 @@ export interface SettingsPanelProps {
 const SPEED_OPTIONS: { value: AnimationSpeed; label: string }[] = [
   { value: 'normal', label: 'Normal' },
   { value: 'fast', label: 'Fast' },
-  { value: 'instant', label: 'Instant (no spin animation)' },
+  { value: 'instant', label: 'Instant (no spin: ball placed at once)' },
 ];
 
 const MOTION_OPTIONS: { value: AppSettings['reduceMotion']; label: string }[] = [
@@ -61,7 +63,7 @@ export function SettingsPanel({ form, loaded, saving, error, onSave, suggestedPr
             value={form.animationSpeed}
             options={SPEED_OPTIONS}
             onChange={(v) => form.setAnimationSpeed(v as AnimationSpeed)}
-            hint="Presentation only — does not change how often a model is asked."
+            hint="Changes only the wheel animation. How often models are asked is set by the pause between autonomous rounds below."
           />
           <SelectField
             label="Reduce motion"
@@ -70,6 +72,27 @@ export function SettingsPanel({ form, loaded, saving, error, onSave, suggestedPr
             onChange={(v) => form.setReduceMotion(v as AppSettings['reduceMotion'])}
           />
         </div>
+      </section>
+
+      <section aria-labelledby="settings-pacing-title" className="flex flex-col gap-2">
+        <h3 id="settings-pacing-title" className="m-0 text-sm font-semibold text-ink">
+          Autonomous play
+        </h3>
+        <p className="m-0 text-xs text-ink-muted">
+          How long the server waits after a round before asking the player (AI model or demo) for the next decision. This
+          sets how often models are called: a shorter pause means more requests per minute. It applies to every autonomous
+          session; the wheel animation speed above does not change it.
+        </p>
+        <TextField
+          label="Pause between autonomous rounds (seconds)"
+          mono
+          inputMode="decimal"
+          value={form.pacingSec}
+          onChange={form.setPacingSec}
+          error={form.pacingError}
+          className="sm:max-w-xs"
+          hint="0 to 600 seconds · default 7"
+        />
       </section>
 
       <section aria-labelledby="settings-pricing-title" className="flex flex-col gap-2">

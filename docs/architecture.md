@@ -1,6 +1,6 @@
 # Architecture
 
-Luck is a single local application: a Fastify backend (Node 22+, TypeScript) that owns every game rule and
+Luck is a single local application: a Fastify backend (Node 22.22.2+ or 24.15+, TypeScript) that owns every game rule and
 every credit, a React + Vite frontend that only displays state and sends requests, and a SQLite file
 (`data/luck.db`, via the built-in `node:sqlite`) that makes sessions durable.
 
@@ -69,7 +69,10 @@ ready ──start──► running ──pause──► pause_requested ──(r
 - Provider failures are retried a bounded number of times with back-off (honouring `Retry-After`),
   then the session **pauses** with the error shown. Invalid model output is never converted into a
   different bet, and a failing AI never silently switches to the demo player.
-- Animation speed only changes the pause between rounds; each round makes exactly one decision request.
+- Between autonomous rounds the server waits `roundPacingMs` (Settings → *Pause between autonomous rounds*,
+  default 7 s, 0–600 s, the same for every autonomous session). That pause — not the wheel — decides how often a
+  model is asked. The animation speed changes only the wheel animation. Each round makes exactly one decision
+  request (plus the bounded retries below).
 - After a restart, unfinished rounds are completed without redrawing an existing outcome, running
   sessions come back **paused**, and in-flight decisions are marked *interrupted* with unknown usage.
   Nothing calls a model until the user presses Start again.
@@ -79,6 +82,10 @@ ready ──start──► running ──pause──► pause_requested ──(r
 A model receives only a `GameObservation`: rules, payouts, limits, its balance, and a bounded history of
 *settled* rounds. The prompt asks it to follow and adapt a named betting system; it deliberately contains no
 house-edge commentary (that disclaimer is shown to the user in the UI and README instead). It never receives RNG state, the pending round, database ids, configuration or secrets.
+One exception to "only": the **Claude Code CLI** adds context of its own to every conversation it runs — the
+working directory, OS/shell details and, with a claude.ai subscription login, your account e-mail. Luck cannot
+switch that off (Claude Code 2.1.280 has no supported flag for it with subscription login); it goes to the same
+Anthropic account the CLI is logged in to. Details: [providers-cli-laya.md](providers-cli-laya.md#what-the-model-sees).
 It answers with `{"action": "bet" | "skip", "bets": [...], "strategy": "...", "explanation": "..."}` ("stop" only
 when the session allows the model to end it), which is parsed
 strictly (`parseDecision`) and then validated by the same rules as a human bet.
@@ -99,12 +106,18 @@ strictly (`parseDecision`) and then validated by the same rules as a human bet.
 - Binds to loopback only; any other `LUCK_HOST` is refused at startup.
 - Host-header allow-list (DNS-rebinding protection), Origin and `Sec-Fetch-Site` checks, a required
   `X-Luck-Client` header on state-changing requests (forces a CORS preflight that is never granted),
-  no CORS headers, a strict Content-Security-Policy.
+  no CORS headers from the API, a strict Content-Security-Policy.
+- In development the browser talks to the Vite dev server, which proxies `/api` to the API. Vite is configured
+  not to send CORS headers either (`server.cors: false`) and to serve only `src/web`, `src/shared` and
+  `node_modules`; the database, `data/`, `tmp/`, `.env*` and `.git` get `403` (`server.fs`, see
+  [configuration.md](configuration.md#http-security-for-reference) and `tests/security/vite-dev.test.ts`).
 - API keys live only in the server's environment (`.env`, gitignored). They are never sent to the
   browser, stored in SQLite, logged or exported; error messages pass through a redactor.
 - The Claude Code CLI path comes only from `.env`; the HTTP API cannot choose an executable. The CLI is
-  spawned without a shell, with all tools, MCP servers and settings disabled; each Luck session keeps one
-  Claude Code conversation (`--session-id`, then `--resume`).
+  spawned without a shell, with all tools, MCP servers and settings disabled, in an empty sandbox folder
+  **outside the repository** (`<OS temp folder>/luck-cli-sandbox`); each Luck session keeps one Claude Code
+  conversation (`--session-id`, then `--resume`). The CLI adds its own context to that conversation (see
+  "What a model sees").
 
 See also: [providers.md](providers.md), [providers-cli-laya.md](providers-cli-laya.md),
 [configuration.md](configuration.md), [testing.md](testing.md), [troubleshooting.md](troubleshooting.md).

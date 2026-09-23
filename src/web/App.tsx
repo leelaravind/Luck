@@ -68,6 +68,7 @@ export function App({ api }: Readonly<AppProps>) {
         sessions={state.sessions}
         selectedId={state.selectedSessionId}
         onSelect={actions.selectSession}
+        onPickerOpen={d.onSessionPickerOpen}
         onNewSession={d.dialog.openNewSession}
         onOpenSettings={() => drawer.openTab('settings')}
         streaming={!!snapshot && snapshot.session.id === state.selectedSessionId}
@@ -102,7 +103,7 @@ export function App({ api }: Readonly<AppProps>) {
             usage={snapshot?.usage ?? null}
             records={state.usageRecords}
           />
-          <LatestDecisionCard decision={d.lastDecision} mode={session?.mode ?? null} />
+          <LatestDecisionCard decision={d.lastDecision} mode={session?.mode ?? null} usage={d.lastDecisionUsage} />
         </Sidebar>
 
         <main id="luck-main" tabIndex={-1} className="flex min-w-0 flex-1 flex-col gap-3">
@@ -167,7 +168,14 @@ export function App({ api }: Readonly<AppProps>) {
             onTab={drawer.setTab}
             counts={{ ledger: p?.revealedRounds.length ?? 0 }}
             panels={{
-              logs: <LogsDecisionsPanel logs={d.visible.logs} decisions={d.visible.decisions} heldBack={d.visible.heldBack} />,
+              logs: (
+                <LogsDecisionsPanel
+                  logs={d.visible.logs}
+                  decisions={d.visible.decisions}
+                  usageByDecision={d.usageByDecision}
+                  heldBack={d.visible.heldBack}
+                />
+              ),
               chart: session && p ? (
                 <BalanceChart rounds={p.revealedRounds} startingBalance={session.startingBalance} />
               ) : (

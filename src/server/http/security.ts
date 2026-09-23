@@ -9,8 +9,12 @@
  *      · an Origin header, when present, must be one of our own origins;
  *      · Sec-Fetch-Site "cross-site" / "same-site" is refused;
  *      · non-GET/HEAD requests must carry "X-Luck-Client: 1". A custom header forces a CORS
- *        preflight, and because we NEVER send Access-Control-Allow-* headers the preflight
- *        fails, so cross-origin pages cannot make state-changing requests.
+ *        preflight, and because this server NEVER sends Access-Control-Allow-* headers the
+ *        preflight fails, so cross-origin pages cannot make state-changing requests. In
+ *        `npm run dev` the browser talks to the Vite dev server, which proxies /api here; Vite's
+ *        own CORS middleware (it grants every localhost origin by default) is switched off with
+ *        `server.cors: false` in vite.config.ts, and its file serving is limited by `server.fs`
+ *        (tests/security/vite-dev.test.ts).
  *  - Security headers (CSP etc.) on every response.
  */
 import type { IncomingHttpHeaders } from 'node:http';

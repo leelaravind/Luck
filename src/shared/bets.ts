@@ -303,6 +303,8 @@ function assertLimits(balance: Subunits, limits: SessionLimits): void {
  * - identical positions are merged by key (stakes summed) and re-checked against maxStakePerBet
  * - COMBINED stake <= maxStakePerRound when set (limit_exceeded) and ALWAYS <= balance (insufficient_funds)
  * - a null maxStakePerBet / maxStakePerRound / maxBetsPerRound means "no limit"
+ * - the best possible return plus the remaining balance must stay <= Number.MAX_SAFE_INTEGER
+ *   (limit_exceeded), so every accepted round can be settled with exact integer math
  * Never "repairs" a bet into a different one.
  *
  * Notes: maxBetsPerRound is checked against the number of SUBMITTED entries (before merging).
@@ -369,7 +371,33 @@ export function validateBetSlip(bets: unknown, ctx: { balance: Subunits; limits:
   if (total > balance) {
     throw new GameError('insufficient_funds', `Combined stake ${amount(total)} exceeds the balance of ${amount(balance)}`, { balance, actual: total });
   }
+  // Settlement uses exact integer math: refuse a slip whose best possible result could push the
+  // balance past the safe integer range (it could never be settled or credited exactly).
+  const bestReturn = maxPossibleReturn(result);
+  const remaining = balance - total;
+  if (bestReturn > Number.MAX_SAFE_INTEGER - remaining) {
+    throw new GameError(
+      'limit_exceeded',
+      `This bet slip could return up to ${amount(bestReturn)}, which together with the remaining balance of ${amount(remaining)} ` +
+        `would exceed the largest balance the table can hold (${amount(Number.MAX_SAFE_INTEGER)}). Lower the stakes.`,
+      { limit: Number.MAX_SAFE_INTEGER - remaining, actual: bestReturn },
+    );
+  }
   return result;
+}
+
+/**
+ * The largest total return (stakes back + winnings) the bets could produce on any single number.
+ * Computed in floating point, which only matters above 2^53 — exactly where the caller refuses.
+ */
+function maxPossibleReturn(bets: readonly ResolvedBet[]): number {
+  let best = 0;
+  for (let n = 0; n <= 36; n++) {
+    let sum = 0;
+    for (const b of bets) if (b.numbers.includes(n)) sum += b.stake * (b.payout + 1);
+    if (sum > best) best = sum;
+  }
+  return best;
 }
 
 /**

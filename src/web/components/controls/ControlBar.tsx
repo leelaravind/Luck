@@ -14,6 +14,10 @@
  *   Next round        autonomous && status ∈ {ready, paused} && !busy
  *   Speed             always (presentation only)
  * Terminal statuses (stopped, completed) therefore disable everything except the speed switch.
+ *
+ * Round/draft buttons are never natively `disabled`: they use aria-disabled and ignore activation instead,
+ * so keyboard focus stays on Spin / Next round / … while the request runs and the result is revealed
+ * (a natively disabled button drops focus to the page body).
  */
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Disc3, Eraser, Pause, Play, Repeat, SkipForward, Square, Undo2, type LucideIcon } from 'lucide-react';
@@ -97,7 +101,7 @@ const PHASE_TEXT: Record<SessionPhase, string | null> = {
 const SPEEDS: readonly { value: AnimationSpeed; label: string; name: string }[] = [
   { value: 'normal', label: '1×', name: 'Normal speed' },
   { value: 'fast', label: '2×', name: 'Double speed' },
-  { value: 'instant', label: 'Max', name: 'Maximum speed' },
+  { value: 'instant', label: 'Max', name: 'Instant speed (no spin animation)' },
 ];
 
 /** After a server-bound click, ignore further clicks on it until the props change (or a short timeout). */
@@ -105,10 +109,17 @@ const CLICK_GUARD_MS = 800;
 
 type Tone = 'gold' | 'primary' | 'danger' | 'neutral';
 const TONE: Record<Tone, string> = {
-  gold: 'bg-champagne text-walnut-dark hover:bg-champagne-light',
-  primary: 'bg-primary text-white hover:bg-primary-strong',
-  danger: 'bg-danger text-white hover:bg-danger-strong',
-  neutral: 'bg-white/10 text-white hover:bg-white/20',
+  gold: 'bg-champagne text-walnut-dark',
+  primary: 'bg-primary text-white',
+  danger: 'bg-danger text-white',
+  neutral: 'bg-white/10 text-white',
+};
+/** Hover/press feedback only while the button can act. */
+const TONE_ACTIVE: Record<Tone, string> = {
+  gold: 'hover:bg-champagne-light active:scale-95',
+  primary: 'hover:bg-primary-strong active:scale-95',
+  danger: 'hover:bg-danger-strong active:scale-95',
+  neutral: 'hover:bg-white/20 active:scale-95',
 };
 
 function CtrlButton(props: {
@@ -120,18 +131,20 @@ function CtrlButton(props: {
   title?: string;
 }) {
   const { icon: Icon, label, onClick, enabled, tone = 'neutral', title } = props;
+  // aria-disabled (not `disabled`): stays focusable, so focus is not lost when it becomes unavailable.
   return (
     <button
       type="button"
-      onClick={onClick}
-      disabled={!enabled}
+      onClick={enabled ? onClick : undefined}
+      aria-disabled={enabled ? undefined : true}
       title={title}
       className={[
         'inline-flex min-h-10 min-w-10 items-center justify-center gap-1.5 rounded-lg px-3 py-2',
-        'font-mono text-xs font-bold shadow-sm transition-colors active:scale-95',
+        'font-mono text-xs font-bold shadow-sm transition-colors',
         'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-champagne-pale',
-        'disabled:cursor-not-allowed disabled:opacity-40 disabled:active:scale-100',
+        'aria-disabled:cursor-not-allowed aria-disabled:opacity-40',
         TONE[tone],
+        enabled ? TONE_ACTIVE[tone] : '',
       ].join(' ')}
     >
       <Icon aria-hidden="true" size={16} strokeWidth={2.25} />
@@ -311,8 +324,8 @@ export function ControlBar(props: ControlBarProps & ControlBarExtraProps) {
               );
             })}
           </div>
-          <p id={speedHelpId} className="m-0 text-[11px] text-white/60">
-            Animation only — does not change how often the model is called
+          <p id={speedHelpId} className="m-0 max-w-72 text-[11px] text-white/60 sm:text-right">
+            Changes only the wheel. How often models are asked is set by the pause between rounds in Settings.
           </p>
         </div>
       </div>

@@ -3,17 +3,22 @@
  * secret-scan.mjs — zero-dependency pre-commit secret scanner for this repository.
  *
  * Scans every file git would publish: tracked files plus untracked files that are NOT ignored
- * (`git ls-files --cached --others --exclude-standard`). Flags
+ * (`git ls-files --cached --others --exclude-standard`). When the folder is not a git repository (e.g. a
+ * ZIP download) or git is not installed, it prints a notice and falls back to walking the folder while
+ * honouring its .gitignore files (the --no-git mode), which gives the files a first commit would contain.
+ * Flags
  *   - high-confidence credential patterns (Anthropic, OpenAI-style "sk-", GitHub, AWS, Slack, PEM private
  *     keys, and generic `api_key = '<long random>'` assignments), and
- *   - files that must never be committed (.env, SQLite databases, *.pem / *.key, client_secret*.json …).
+ *   - files that must never be committed (.env, SQLite databases, *.pem / *.key, client_secret*.json, model
+ *     weights such as *.safetensors / *.gguf / *.pt …).
  *
  * Usage:
  *   node scripts/secret-scan.mjs [--root <dir>] [--no-git] [--json]
  *     --root <dir>  directory to scan (default: current working directory)
- *     --no-git      walk the directory instead of asking git (used by the scanner's own tests)
+ *     --no-git      walk the directory instead of asking git, skipping .git/, node_modules/ and whatever the
+ *                   folder's .gitignore files ignore (automatic when the folder is not a git repository)
  *     --json        machine-readable report on stdout
- * Exit codes: 0 = clean, 1 = findings, 2 = scanner error (e.g. git unavailable).
+ * Exit codes: 0 = clean, 1 = findings, 2 = scanner error (bad arguments, unreadable folder).
  *
  * Allow-list: the documented test fake `sk-ant-test-SECRET123`, obvious placeholders (xxxx, <...>, your-key,
  * changeme, …), generic `NAME=value` assignments in `.env.example` (vendor-shaped keys there ARE still flagged),
@@ -80,11 +85,13 @@ const RULES = [
 /** Files that must never be committed, whatever their content. */
 const FORBIDDEN_FILES = [
   { id: 'dotenv-file', test: (b) => (b === '.env' || b.startsWith('.env.')) && !/^\.env\.(example|sample|template)$/.test(b) },
-  { id: 'sqlite-database', test: (b) => /\.(db|sqlite|sqlite3|db-wal|db-shm|db-journal)$/.test(b) },
+  { id: 'sqlite-database', test: (b) => /\.(db|sqlite|sqlite3)(-wal|-shm|-journal)?$/.test(b) },
   { id: 'pem-or-key-file', test: (b) => /\.(pem|key|p12|pfx)$/.test(b) },
   { id: 'ssh-private-key', test: (b) => /^id_(rsa|dsa|ecdsa|ed25519)$/.test(b) },
   { id: 'google-client-secret', test: (b) => /^client_secret.*\.json$/.test(b) },
   { id: 'credentials-json', test: (b) => /^credentials.*\.json$/.test(b) },
+  // Model weights (Laya / local models): large binaries that belong in a model cache, never in the repository.
+  { id: 'model-weights', test: (b) => /\.(safetensors|gguf|pt|pth|ckpt|onnx|h5)$/.test(b) },
 ];
 
 // ───────────────────────────── helpers ─────────────────────────────
@@ -169,6 +176,26 @@ function parseArgs(argv) {
   return opts;
 }
 
+/**
+ * Can git list files for `root`? { ok: true } inside a work tree; otherwise { ok: false, reason } — git not
+ * installed, not a git repository (e.g. a ZIP download), or git refusing the folder ("dubious ownership").
+ */
+export function gitStatus(root) {
+  try {
+    const out = execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return out.trim() === 'true' ? { ok: true } : { ok: false, reason: 'not inside a git work tree' };
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { ok: false, reason: 'git is not installed' };
+    const first = String(e?.stderr || e?.message || '').split(/\r?\n/).find((l) => l.trim()) ?? 'git failed';
+    if (/not a git repository/i.test(first)) return { ok: false, reason: 'not a git repository' };
+    return { ok: false, reason: first.replace(/^fatal:\s*/i, '').trim() };
+  }
+}
+
 /** Files git would publish: tracked + untracked-not-ignored. Paths relative to root, forward slashes. */
 function listGitFiles(root) {
   const out = execFileSync('git', ['ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
@@ -180,18 +207,130 @@ function listGitFiles(root) {
   return [...new Set(out.split('\0').filter(Boolean))].sort();
 }
 
-/** Plain directory walk (no git). Skips .git and node_modules. */
+// ───────────────────────────── .gitignore (walk mode) ─────────────────────────────
+
+const escapeRegexChar = (c) => (/[.*+?^${}()|[\]\\/]/.test(c) ? `\\${c}` : c);
+
+/** One .gitignore glob (without "!", leading "/" or trailing "/") → RegExp source, following git's wildmatch. */
+function gitignoreGlobToRegex(glob) {
+  let re = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      if (glob[i + 1] === '*') {
+        const atSegmentStart = i === 0 || glob[i - 1] === '/';
+        const next = glob[i + 2];
+        if (atSegmentStart && next === '/') {
+          re += '(?:.*/)?'; // "**/" — zero or more folders
+          i += 2;
+        } else if (atSegmentStart && next === undefined) {
+          re += '.*'; // trailing "/**" — everything inside
+          i += 1;
+        } else {
+          re += '[^/]*'; // any other "**" behaves like "*"
+          i += 1;
+        }
+        continue;
+      }
+      re += '[^/]*';
+    } else if (c === '?') {
+      re += '[^/]';
+    } else if (c === '[') {
+      let j = i + 1;
+      if (glob[j] === '!' || glob[j] === '^') j++;
+      if (glob[j] === ']') j++; // a "]" right after "[" or "[!" is a literal member
+      const close = glob.indexOf(']', j);
+      if (close === -1) {
+        re += '\\[';
+        continue;
+      }
+      let body = glob.slice(i + 1, close);
+      const negate = body.startsWith('!') || body.startsWith('^');
+      if (negate) body = body.slice(1);
+      re += `(?!/)[${negate ? '^' : ''}${body.replace(/[\\\]^]/g, '\\$&')}]`;
+      i = close;
+    } else if (c === '\\' && i + 1 < glob.length) {
+      re += escapeRegexChar(glob[++i]);
+    } else {
+      re += escapeRegexChar(c);
+    }
+  }
+  return re;
+}
+
+/**
+ * Parse a .gitignore into ordered rules { negate, dirOnly, re }; `re` is tested against the path relative to the
+ * folder that holds the .gitignore. Supports comments, "!" negation, "\#" / "\!" escapes, a trailing "/"
+ * (folders only), a "/" at the start or in the middle (anchored to that folder), "*", "?", "[...]" and "**".
+ * Case-insensitive on Windows and macOS, like git's default core.ignorecase there.
+ */
+export function parseGitignore(text, { ignoreCase = process.platform === 'win32' || process.platform === 'darwin' } = {}) {
+  const rules = [];
+  for (const raw of text.split(/\r?\n/)) {
+    if (!raw || raw.startsWith('#')) continue;
+    let line = raw.replace(/(?<!\\) +$/, ''); // trailing spaces are ignored unless escaped
+    if (!line) continue;
+    let negate = false;
+    if (line.startsWith('!')) {
+      negate = true;
+      line = line.slice(1);
+    } else if (line.startsWith('\\!') || line.startsWith('\\#')) {
+      line = line.slice(1);
+    }
+    let dirOnly = false;
+    if (line.endsWith('/')) {
+      dirOnly = true;
+      line = line.replace(/\/+$/, '');
+    }
+    if (!line) continue;
+    const anchored = line.includes('/');
+    line = line.replace(/^\/+/, '');
+    const source = gitignoreGlobToRegex(line);
+    rules.push({ negate, dirOnly, re: new RegExp(anchored ? `^${source}$` : `^(?:.*/)?${source}$`, ignoreCase ? 'i' : '') });
+  }
+  return rules;
+}
+
+/** Is relPath ignored by the stack of .gitignore rule sets (outermost first)? The last matching rule wins. */
+function isIgnored(stack, relPath, isDir) {
+  let ignored = false;
+  for (const { base, rules } of stack) {
+    if (base && !relPath.startsWith(`${base}/`)) continue;
+    const rel = base ? relPath.slice(base.length + 1) : relPath;
+    for (const r of rules) {
+      if (r.dirOnly && !isDir) continue;
+      if (r.re.test(rel)) ignored = !r.negate;
+    }
+  }
+  return ignored;
+}
+
+/**
+ * Directory walk (no git). Skips .git/ and node_modules/ and honours every .gitignore in the tree the way git
+ * treats untracked files: an ignored folder is not entered, so nothing inside it can be re-included.
+ */
 function walkFiles(root) {
   const files = [];
-  const walk = (dir) => {
-    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+  const walk = (dirAbs, relDir, parentStack) => {
+    let stack = parentStack;
+    let gitignore = null;
+    try {
+      gitignore = readFileSync(path.join(dirAbs, '.gitignore'), 'utf8');
+    } catch {
+      // no .gitignore in this folder
+    }
+    if (gitignore !== null) stack = [...parentStack, { base: relDir, rules: parseGitignore(gitignore) }];
+    for (const ent of readdirSync(dirAbs, { withFileTypes: true })) {
       if (ent.name === '.git' || ent.name === 'node_modules') continue;
-      const abs = path.join(dir, ent.name);
-      if (ent.isDirectory()) walk(abs);
-      else if (ent.isFile()) files.push(path.relative(root, abs).split(path.sep).join('/'));
+      const rel = relDir ? `${relDir}/${ent.name}` : ent.name;
+      if (ent.isDirectory()) {
+        if (!isIgnored(stack, rel, true)) walk(path.join(dirAbs, ent.name), rel, stack);
+      } else if (ent.isFile() && !isIgnored(stack, rel, false)) {
+        files.push(rel);
+      }
     }
   };
-  walk(root);
+  walk(root, '', []);
   return files.sort();
 }
 
@@ -246,8 +385,13 @@ function isBinary(buf) {
   return false;
 }
 
+/** The files a scan looks at: git's list (git mode) or the .gitignore-aware walk. Sorted, forward slashes. */
+export function listFiles({ root, git }) {
+  return git ? listGitFiles(root) : walkFiles(root);
+}
+
 export function scan({ root, git }) {
-  const files = git ? listGitFiles(root) : walkFiles(root);
+  const files = listFiles({ root, git });
   const findings = [];
   const skipped = [];
   let scanned = 0;
@@ -291,11 +435,29 @@ function main() {
   }
   if (opts.help) {
     console.log('Usage: node scripts/secret-scan.mjs [--root <dir>] [--no-git] [--json]');
+    console.log('Outside a git repository (or without git) the folder is walked, honouring its .gitignore files.');
     return 0;
+  }
+  try {
+    if (!statSync(opts.root).isDirectory()) throw new Error('not a directory');
+  } catch (e) {
+    console.error(`secret-scan: cannot scan ${opts.root} (${e.code ?? e.message})`);
+    return 2;
+  }
+  let fallbackReason = null;
+  if (opts.git) {
+    const st = gitStatus(opts.root);
+    if (!st.ok) {
+      // e.g. a ZIP download: scan the folder itself instead of failing.
+      fallbackReason = st.reason;
+      opts.git = false;
+      console.error(`secret-scan: notice — ${st.reason} (${opts.root}); scanning the folder instead (--no-git mode, honouring .gitignore).`);
+    }
   }
   let report;
   try {
     report = scan(opts);
+    if (fallbackReason) report.fallbackReason = fallbackReason;
   } catch (e) {
     console.error(`secret-scan: could not list files (${e.message.split('\n')[0]})`);
     return 2;

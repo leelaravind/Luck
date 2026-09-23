@@ -6,8 +6,8 @@ Commands are shown for **PowerShell** first, then **bash** (macOS / Linux / Git 
 
 ### `node` is not recognised, or "Node.js … is too old"
 
-Luck needs Node.js **22.13 or newer** (22 LTS) or **24**. Install it from <https://nodejs.org/>, then open a
-**new** terminal window and check:
+Luck needs Node.js **22.22.2 or newer** (22 LTS) or **24.15 or newer** (`package.json` → `engines`:
+`^22.22.2 || >=24.15.0`). Install it from <https://nodejs.org/>, then open a **new** terminal window and check:
 
 ```
 node --version

@@ -1,6 +1,7 @@
-# Keep the original Stitch exports byte-for-byte (no EOL conversion)
-design-references/** -text -diff
 # Normalise source files to LF in the repository
 * text=auto eol=lf
 *.ps1 text eol=crlf
 *.png binary
+# Keep the original Stitch exports byte-for-byte (no EOL conversion, no diff).
+# Must stay BELOW "* text=auto": for each attribute the last matching line wins.
+design-references/** -text -diff -eol

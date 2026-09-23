@@ -18,7 +18,15 @@ import { createDemoPlayer, DEMO_PLAYER_LABEL, demoBetType, demoStake } from './d
 import { buildObservation } from './observation.js';
 import { buildCorrectiveNote, buildSystemPrompt, buildUserPrompt } from './prompt.js';
 import { computeBackoffMs, MAX_RETRY_AFTER_MS } from './retry.js';
-import { loadSettings, saveSettings, validateCreateSessionRequest, validateLimits } from './settings.js';
+import {
+  DEFAULT_ROUND_PACING_MS,
+  loadSettings,
+  MAX_ROUND_PACING_MS,
+  SETTINGS_KEY,
+  saveSettings,
+  validateCreateSessionRequest,
+  validateLimits,
+} from './settings.js';
 import { attemptCost, buildUsageRecord, outputTokensPerSec, summarizeUsage } from './usage.js';
 import { FAKE_ANTHROPIC_KEY, testConfig } from './__tests__/helpers.js';
 
@@ -399,11 +407,13 @@ describe('usage accounting', () => {
 // ───────────────────────────── settings & validation ─────────────────────────────
 
 describe('settings and session validation', () => {
-  it('defaults: DEFAULT_LIMITS, normal speed, system motion, default pricing, no players', () => {
+  it('defaults: DEFAULT_LIMITS, normal speed, 7 s round pacing, system motion, default pricing, no players', () => {
     const repo = openRepository(':memory:');
     const s = loadSettings(repo);
     expect(s.defaultLimits).toEqual(DEFAULT_LIMITS);
     expect(s.animationSpeed).toBe('normal');
+    expect(s.roundPacingMs).toBe(DEFAULT_ROUND_PACING_MS);
+    expect(DEFAULT_ROUND_PACING_MS).toBe(7_000);
     expect(s.reduceMotion).toBe('system');
     expect(s.pricing).toEqual(DEFAULT_PRICING);
     expect(s.players).toEqual({});
@@ -419,6 +429,80 @@ describe('settings and session validation', () => {
     expect(s.pricing['openai:gpt-x']).toEqual(pricing);
     expect(Object.keys(s.pricing).length).toBe(Object.keys(DEFAULT_PRICING).length + 1);
     expect(s.defaultLimits.maxRounds).toBe(10);
+    repo.close();
+  });
+
+  it('#4: roundPacingMs is persisted independently of the animation speed and validated (0..600000 ms)', () => {
+    const repo = openRepository(':memory:');
+    expect(saveSettings(repo, { roundPacingMs: 1_500 }).roundPacingMs).toBe(1_500);
+    // Changing the animation speed leaves the pacing alone (and the reverse).
+    expect(saveSettings(repo, { animationSpeed: 'instant' })).toMatchObject({ animationSpeed: 'instant', roundPacingMs: 1_500 });
+    expect(saveSettings(repo, { roundPacingMs: 0 })).toMatchObject({ animationSpeed: 'instant', roundPacingMs: 0 });
+    expect(saveSettings(repo, { roundPacingMs: MAX_ROUND_PACING_MS }).roundPacingMs).toBe(600_000);
+    for (const bad of [-1, MAX_ROUND_PACING_MS + 1, 1.5, '7000', null]) {
+      expect(() => saveSettings(repo, { roundPacingMs: bad })).toThrow(expect.objectContaining({ code: 'validation_error' }));
+    }
+    expect(loadSettings(repo).roundPacingMs).toBe(600_000);
+    // A corrupt stored value falls back to the default instead of breaking the runner.
+    repo.putSetting(SETTINGS_KEY, { roundPacingMs: -5 });
+    expect(loadSettings(repo).roundPacingMs).toBe(DEFAULT_ROUND_PACING_MS);
+    repo.close();
+  });
+
+  it('#36: "pricing" in a patch is the complete map of user entries — a removed row stays removed after reload', () => {
+    const repo = openRepository(':memory:');
+    const mine = { inputPerMTokUsd: 1, outputPerMTokUsd: 2, source: 'user' as const, asOf: '2026-09-23' };
+    const other = { inputPerMTokUsd: 3, outputPerMTokUsd: 4, source: 'user' as const };
+    // The Settings form sends the whole table it shows: defaults + user rows.
+    const withBoth = saveSettings(repo, { pricing: { ...DEFAULT_PRICING, 'openai:gpt-x': mine, 'ollama:llama3': other } });
+    expect(withBoth.pricing['openai:gpt-x']).toEqual(mine);
+    expect(Object.keys(withBoth.pricing)).toHaveLength(Object.keys(DEFAULT_PRICING).length + 2);
+
+    // Remove one row and save: it is deleted, the other user row and every default stay.
+    const shown = loadSettings(repo).pricing;
+    const { 'openai:gpt-x': _removed, ...rest } = shown;
+    saveSettings(repo, { pricing: rest });
+    const reloaded = loadSettings(repo);
+    expect(reloaded.pricing['openai:gpt-x']).toBeUndefined();
+    expect(reloaded.pricing['ollama:llama3']).toEqual(other);
+    for (const k of Object.keys(DEFAULT_PRICING)) expect(reloaded.pricing[k]).toEqual(DEFAULT_PRICING[k]);
+    // Only user entries are stored; defaults are never copied into the stored settings.
+    expect(Object.keys(repo.getSetting<{ pricing: Record<string, unknown> }>(SETTINGS_KEY)!.pricing)).toEqual(['ollama:llama3']);
+
+    // Default assumptions cannot be removed: omitting them (or sending {}) keeps them.
+    saveSettings(repo, { pricing: {} });
+    expect(loadSettings(repo).pricing).toEqual(DEFAULT_PRICING);
+
+    // A user override of a default key wins; removing the override brings the default back.
+    const override = { ...DEFAULT_PRICING['anthropic:claude-opus-5']!, inputPerMTokUsd: 4, source: 'user' as const };
+    saveSettings(repo, { pricing: { ...DEFAULT_PRICING, 'anthropic:claude-opus-5': override } });
+    expect(loadSettings(repo).pricing['anthropic:claude-opus-5']).toEqual(override);
+    saveSettings(repo, { pricing: { ...DEFAULT_PRICING } });
+    expect(loadSettings(repo).pricing['anthropic:claude-opus-5']).toEqual(DEFAULT_PRICING['anthropic:claude-opus-5']);
+
+    // A patch without "pricing" leaves the user's entries alone.
+    saveSettings(repo, { pricing: { 'openai:kept': other } });
+    saveSettings(repo, { animationSpeed: 'fast' });
+    expect(loadSettings(repo).pricing['openai:kept']).toEqual(other);
+    repo.close();
+  });
+
+  it('#36: stale copies of default assumptions stored by older versions do not shadow the current defaults', () => {
+    const repo = openRepository(':memory:');
+    const staleCopy = { ...DEFAULT_PRICING['anthropic:claude-sonnet-5']!, inputPerMTokUsd: 99, source: 'default-assumption' as const };
+    repo.putSetting(SETTINGS_KEY, { pricing: { 'anthropic:claude-sonnet-5': staleCopy, 'openai:gpt-y': { inputPerMTokUsd: 1, outputPerMTokUsd: 1, source: 'user' } } });
+    const s = loadSettings(repo);
+    expect(s.pricing['anthropic:claude-sonnet-5']).toEqual(DEFAULT_PRICING['anthropic:claude-sonnet-5']);
+    expect(s.pricing['openai:gpt-y']).toMatchObject({ source: 'user' });
+    repo.close();
+  });
+
+  it('#31: a Claude Code CLI player needs a valid CLI model name (settings and session requests)', () => {
+    const repo = openRepository(':memory:');
+    expect(() => saveSettings(repo, { players: { 'claude-cli': { kind: 'claude-cli', model: '--tools=Bash' } } })).toThrow(/Claude Code CLI model/);
+    expect(() => validateCreateSessionRequest({ player: { kind: 'claude-cli', model: '-p' } })).toThrow(/player\.model: Claude Code CLI model/);
+    expect(validateCreateSessionRequest({ player: { kind: 'claude-cli', model: 'opus' } }).player.model).toBe('opus');
+    expect(validateCreateSessionRequest({ player: { kind: 'claude-cli' } }).player.model).toBeUndefined(); // CLI default model
     repo.close();
   });
 

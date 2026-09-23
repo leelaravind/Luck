@@ -40,6 +40,8 @@ function props(over: Partial<ControlBarProps> = {}): ControlBarProps {
 }
 
 const button = (name: string | RegExp) => screen.getByRole('button', { name }) as HTMLButtonElement;
+/** Round/draft buttons use aria-disabled (focus is kept); chips and others may use the native attribute. */
+const inert = (el: Element) => (el as HTMLButtonElement).disabled || el.getAttribute('aria-disabled') === 'true';
 
 describe('enableState matrix', () => {
   // Expected autonomous enables per status (not busy): [start, pause, stop, step]
@@ -119,11 +121,15 @@ describe('ControlBar rendering', () => {
     const user = userEvent.setup();
     const p = props({ busy: true });
     const { rerender } = render(<ControlBar {...p} />);
-    expect(button('Spin').disabled).toBe(true);
+    expect(inert(button('Spin'))).toBe(true);
+    expect(button('Spin').disabled).toBe(false); // aria-disabled only, so it stays focusable
     await user.click(button('Spin'));
+    button('Spin').focus();
+    await user.keyboard('{Enter}');
+    await user.keyboard(' ');
     expect(p.onSpin).not.toHaveBeenCalled();
     rerender(<ControlBar {...p} busy={false} />);
-    expect(button('Spin').disabled).toBe(false);
+    expect(inert(button('Spin'))).toBe(false);
   });
 
   it('a double click before the parent re-renders fires Spin once', () => {
@@ -137,19 +143,19 @@ describe('ControlBar rendering', () => {
 
   it('Spin is disabled while the wheel animates or when canSpin is false', () => {
     const { rerender } = render(<ControlBar {...props({ animating: true })} />);
-    expect(button('Spin').disabled).toBe(true);
+    expect(inert(button('Spin'))).toBe(true);
     rerender(<ControlBar {...props({ canSpin: false })} />);
-    expect(button('Spin').disabled).toBe(true);
-    expect(button('Undo').disabled).toBe(false);
+    expect(inert(button('Spin'))).toBe(true);
+    expect(inert(button('Undo'))).toBe(false);
   });
 
   it.each(STATUSES)('autonomous buttons follow the matrix in status %s', (status) => {
     render(<ControlBar {...props({ mode: 'ai', status })} />);
     const e = enableState({ mode: 'ai', status, canSpin: false, busy: false, animating: false });
-    expect(button('Start').disabled).toBe(!e.start);
-    expect(button('Pause after round').disabled).toBe(!e.pause);
-    expect(button('Stop').disabled).toBe(!e.stop);
-    expect(button('Next round').disabled).toBe(!e.step);
+    expect(inert(button('Start'))).toBe(!e.start);
+    expect(inert(button('Pause after round'))).toBe(!e.pause);
+    expect(inert(button('Stop'))).toBe(!e.stop);
+    expect(inert(button('Next round'))).toBe(!e.step);
     expect(screen.queryByRole('button', { name: 'Spin' })).toBeNull();
   });
 
@@ -179,10 +185,15 @@ describe('ControlBar rendering', () => {
       const speedRadios = radios.filter((r) => /speed/i.test(r.getAttribute('aria-label') ?? ''));
       expect(speedRadios.length).toBe(3);
       for (const b of [...buttons, ...radios.filter((r) => !speedRadios.includes(r))]) {
-        expect((b as HTMLButtonElement).disabled).toBe(true);
+        expect(inert(b)).toBe(true);
       }
-      for (const r of speedRadios) expect((r as HTMLButtonElement).disabled).toBe(false);
-      await user.click(screen.getByRole('radio', { name: 'Maximum speed' }));
+      // Clicking or pressing an inert control does nothing.
+      for (const b of buttons) await user.click(b);
+      for (const fn of [p.onSpin, p.onUndo, p.onClear, p.onRepeat, p.onStart, p.onPause, p.onStop, p.onStep]) {
+        expect(fn).not.toHaveBeenCalled();
+      }
+      for (const r of speedRadios) expect(inert(r)).toBe(false);
+      await user.click(screen.getByRole('radio', { name: 'Instant speed (no spin animation)' }));
       expect(p.onSpeedChange).toHaveBeenCalledWith('instant');
       unmount();
     }
@@ -192,7 +203,9 @@ describe('ControlBar rendering', () => {
     const user = userEvent.setup();
     const p = props({ speed: 'fast' });
     render(<ControlBar {...p} />);
-    expect(screen.getByText('Animation only — does not change how often the model is called')).toBeTruthy();
+    // Accurate hint (#4): the speed only changes the wheel; the pause between rounds sets the call rate.
+    expect(screen.getByText(/^Changes only the wheel. How often models are asked is set by the pause between rounds in Settings.$/)).toBeTruthy();
+    expect(document.body.textContent).not.toContain('does not change how often');
     const group = screen.getByRole('radiogroup', { name: 'Animation speed' });
     expect(group.getAttribute('aria-describedby')).toBeTruthy();
     expect(screen.getByRole('radio', { name: 'Double speed' }).getAttribute('aria-checked')).toBe('true');
@@ -202,6 +215,57 @@ describe('ControlBar rendering', () => {
     screen.getByRole('radio', { name: 'Double speed' }).focus();
     await user.keyboard('{ArrowRight}');
     expect(p.onSpeedChange).toHaveBeenLastCalledWith('instant');
+  });
+
+  it('keyboard focus stays on Spin while the round is sent, animated and revealed (#25)', async () => {
+    const user = userEvent.setup();
+    const p = props();
+    const { rerender } = render(<ControlBar {...p} />);
+    await user.tab();
+    let guard = 0;
+    while (document.activeElement !== button('Spin') && guard++ < 20) await user.tab();
+    expect(document.activeElement).toBe(button('Spin'));
+    await user.keyboard('{Enter}');
+    expect(p.onSpin).toHaveBeenCalledTimes(1);
+    // Request in flight → wheel animating → result revealed with an empty draft (Spin unavailable).
+    // Browsers move focus to <body> when the focused button becomes natively disabled (jsdom does not
+    // emulate that), so the button must stay unavailable via aria-disabled only, never `disabled`.
+    for (const over of [{ busy: true }, { animating: true }, { canSpin: false, lastNet: -100 }]) {
+      rerender(<ControlBar {...p} {...over} />);
+      expect(inert(button('Spin'))).toBe(true);
+      expect(button('Spin').disabled).toBe(false);
+      expect(document.activeElement).toBe(button('Spin'));
+    }
+    // Still in the tab order while unavailable (a natively disabled button would be skipped).
+    button('Spin').blur();
+    guard = 0;
+    while (document.activeElement !== button('Spin') && guard++ < 20) await user.tab();
+    expect(document.activeElement).toBe(button('Spin'));
+    // Pressing it again while unavailable does nothing.
+    await user.keyboard('{Enter}');
+    expect(p.onSpin).toHaveBeenCalledTimes(1);
+    rerender(<ControlBar {...p} />);
+    await user.keyboard('{Enter}');
+    expect(p.onSpin).toHaveBeenCalledTimes(2);
+  });
+
+  it('keyboard focus stays on Next round through the step (#25)', async () => {
+    const user = userEvent.setup();
+    const p = props({ mode: 'ai', status: 'paused' });
+    const { rerender } = render(<ControlBar {...p} />);
+    button('Next round').focus();
+    await user.keyboard('{Enter}');
+    expect(p.onStep).toHaveBeenCalledTimes(1);
+    rerender(<ControlBar {...p} busy />);
+    expect(button('Next round').disabled).toBe(false);
+    rerender(<ControlBar {...p} status="running" phase="requesting_decision" />);
+    expect(inert(button('Next round'))).toBe(true);
+    expect(button('Next round').disabled).toBe(false);
+    expect(document.activeElement).toBe(button('Next round'));
+    rerender(<ControlBar {...p} status="paused" phase="settled" />);
+    expect(document.activeElement).toBe(button('Next round'));
+    await user.keyboard(' ');
+    expect(p.onStep).toHaveBeenCalledTimes(2);
   });
 
   it('chip selector shows the given values and reports a new chip', async () => {

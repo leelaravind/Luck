@@ -61,6 +61,17 @@ variables). Trailing slashes are removed. See [providers.md](providers.md) for w
 | `LAYA_API_KEY` | *(empty)* | Secret, if your `laya-serve` requires one. |
 | `LAYA_CHECKPOINT` | `english` | Letters, digits, `.`, `_`, `-` only (e.g. `english`, `multilingual`, `typed-decisions`). |
 
+## In-app settings (Settings panel, saved in the database)
+
+These are not environment variables; change them in the app's **Settings** panel.
+
+| Setting | Default | What it changes |
+|---|---|---|
+| Wheel animation speed (`animationSpeed`: 1× / 2× / Max) | 1× | **Only the wheel animation.** It does not change how often models are called. |
+| Pause between autonomous rounds (`roundPacingMs`) | 7 seconds | How long the server waits after a round before it asks the player (AI model or demo) for the next decision — this is what sets how often models are called. 0–600 s; applies to every autonomous session. |
+| Reduce motion | follow the system | Wheel shown without spinning. |
+| Pricing assumptions | defaults in `src/server/providers/pricing.ts` | Only the *estimated* cost figures and the optional spending-limit check. |
+
 ## Secrets
 
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `LAYA_API_KEY` are read only by the server. At startup each value
@@ -78,7 +89,16 @@ These are fixed, not configurable:
   plus the dev web host in development) — this blocks DNS-rebinding attacks.
 - API requests with an `Origin` header must come from an allowed origin; `Sec-Fetch-Site: cross-site` and
   `same-site` are refused; every non-GET request must send `X-Luck-Client: 1`; creating sessions, placing
-  rounds and control actions need an `Idempotency-Key` header. No CORS headers are ever sent.
+  rounds and control actions need an `Idempotency-Key` header. The API server never sends CORS
+  (`Access-Control-Allow-*`) headers.
+- The **development web server** (`npm run dev`, Vite on `LUCK_WEB_PORT`) is locked down the same way in
+  `vite.config.ts`: its CORS middleware is off (`server.cors: false` — Vite's default would grant every
+  `http://localhost:*` / `http://127.0.0.1:*` origin), and it serves files only from `src/web`, `src/shared` and
+  `node_modules` (`server.fs.strict` + `allow`). Everything else — `data/` (the SQLite database), `tmp/`, `.env*`,
+  `.git`, the server code — gets `403`, and database files (`*.db`, `*.db-*`, `*.sqlite*`) are refused even
+  inside the allowed folders (`server.fs.deny`). Verified by `tests/security/vite-dev.test.ts`, which starts Vite
+  with this config on an ephemeral port. (Earlier versions served `/@fs/<project>/data/luck.db` with a CORS grant
+  to any local page; the database holds history, decisions and logs, but never API keys.)
 - JSON bodies only, at most 64 KB.
 - Every response carries a Content-Security-Policy (`default-src 'self'` …), `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY` and `Cross-Origin-Opener-Policy: same-origin`.

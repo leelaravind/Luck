@@ -43,6 +43,10 @@ export const COPY = {
   pricingAssumption: 'Assumption — verify current provider pricing',
   historyNotice: 'Historical results — labelled by round number. The current spin appears only after the ball rests.',
   houseEdgeNote: 'European single-zero roulette: every bet has a negative expected value for the player.',
+  providerNoteTitle: 'Provider note (adapter, not the model)',
+  providerNoteHint:
+    'A factual note recorded by the provider adapter for this decision (for example a resumed Claude Code conversation, or Laya’s top labels and routing). It is not text from the model.',
+  decisionUsageTitle: 'Usage per attempt',
 } as const;
 
 export const SESSION_STATUS_LABEL: Record<SessionStatus, string> = {
@@ -116,6 +120,15 @@ export const COST_BASIS_LABEL: Record<CostBasis, string> = {
   'not-applicable': 'Not applicable',
 };
 
+/** Short cost-basis tags for compact per-attempt rows (the full COST_BASIS_LABEL is the tooltip). */
+export const COST_BASIS_SHORT: Record<CostBasis, string> = {
+  'provider-reported': 'reported by the provider tool',
+  'estimated-from-pricing': 'estimate from pricing assumption',
+  'local-no-charge': 'local, no charge',
+  unknown: 'unknown',
+  'not-applicable': 'not applicable',
+};
+
 export const DRAWER_TAB_LABEL = {
   logs: 'Logs & decisions',
   chart: 'Balance chart',
@@ -141,6 +154,10 @@ export const MISSING_REASON = {
     'No app spending limit is set: the player continues until the balance cannot cover the minimum stake or you press Stop. API-key providers bill every request; Claude Code on a subscription uses plan quota.',
   notAi: 'This session is not played by an AI model, so there is no model usage.',
   latestDecisionNone: 'No decision has been requested yet.',
+  attemptNoUsage: 'The provider did not report token usage for this attempt (e.g. timeout, error or crash).',
+  attemptNoCost: 'No cost is known for this attempt: usage or a pricing assumption is missing.',
+  decisionNoUsage: 'No usage record was stored for this decision.',
+  decisionNotSent: 'No request was sent for this decision, so there is no usage.',
 } as const;
 
 export const LIMIT_FIELD_COPY = {

@@ -34,9 +34,10 @@ export async function registerStaticAndFallback(app: FastifyInstance, webDistDir
       // We set Cache-Control ourselves below (send's default "max-age=0" would override it).
       cacheControl: false,
       // Vite emits content-hashed file names under /assets, so those can be cached for long.
-      setHeaders(res, filePath) {
-        if (/[\\/]assets[\\/]/.test(filePath)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-        else res.setHeader('Cache-Control', 'no-cache');
+      // @fastify/static >= 10 calls this with the Fastify reply (not the raw response).
+      setHeaders(reply, filePath) {
+        if (/[\\/]assets[\\/]/.test(filePath)) reply.header('Cache-Control', 'public, max-age=31536000, immutable');
+        else reply.header('Cache-Control', 'no-cache');
       },
     });
   }

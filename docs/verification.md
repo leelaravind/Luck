@@ -1,22 +1,25 @@
 # Verification report (2026-09-23)
 
 What was actually checked, how, and what is still open. Counts are copied from real command output.
+Updated after the final audit's fix round (items refer to that audit); counts marked `<!--COUNTS-->` are filled in
+from the final run of that round.
 
 ## Automated checks
 
 | Check | Result |
 |---|---|
 | `npx tsc -p tsconfig.json --noEmit` and `tsc -p tsconfig.server.json --noEmit` | 0 errors |
-| `npx vitest run` | 47 test files, 1 063 tests passed, 0 failed |
+| `npx vitest run` | 54 test files, 1 184 tests passed, 0 failed |
 | `npm run build` | web bundle + compiled server built; CSS compiled locally, fonts bundled |
-| `node scripts/validate-components.mjs` | 49 components pass (Props interface, no hex in className) |
-| `node scripts/secret-scan.mjs` | clean (210 files) |
+| `node scripts/validate-components.mjs` | 51 components pass (Props interface, no hex in className) |
+| `node scripts/secret-scan.mjs` | clean — 223 files scanned (git mode; the walk mode used for a ZIP download lists the same files) |
 
 Key suites: `src/shared/bets.test.ts` (157 bet positions × 37 outcomes against a hand-typed oracle), `src/server/db/*.test.ts`
 (transactions, exactly-once settlement, crash at 4 commit boundaries), `src/web/components/wheel/*` (all 37 landings,
 consecutive spins, onSettled once, reduced motion, hidden tab, independent wheel-order oracle), `src/server/session/*`
 (pause/stop/step, stale responses, one in-flight decision, retries, budget pre-check, recovery), `tests/e2e/*`
-(manual, demo, AI-fixture, restart recovery), `tests/security/*`.
+(manual, demo, AI-fixture, restart recovery), `tests/security/*` (HTTP boundary, Vite dev server, secret scanner,
+repository hygiene).
 
 ## Live checks against the running app (not fixtures)
 
@@ -33,8 +36,8 @@ consecutive spins, onSettled once, reduced motion, hidden tab, independent wheel
 
 | Provider | Live? | Evidence |
 |---|---|---|
-| Laya (local `laya-serve`, english checkpoint, CPU) | **Live** | 3-round session through the app: skip, red (lost), red (won); decisions validated and settled; label probability + Laya confidence shown raw/uncalibrated; input tokens 262–276, output tokens "not applicable"; ~1.9 s per decision |
-| Claude Code CLI 2.1.280 (subscription login) | **Live** (2 build-agent calls + 2 adapter calls + one 3-round session) | login check via `claude auth status`; maintained conversation (`--session-id`, then `--resume`); decisions validated by the engine and settled; named strategies with varied bet mixes; CLI cost estimates $0.003–$0.020 per call (estimates, not billing, on a subscription) |
+| Laya (local `laya-serve` 0.3.7, english checkpoint, CPU) | **Live** | 13 labels, no `stop` (a returned `stop` is invalid output). 3-round session through the app: skip, red (lost), red (won); decisions validated and settled; label probability + Laya confidence shown raw/uncalibrated; input tokens 262–276, output tokens "not applicable"; ~1.9 s per decision |
+| Claude Code CLI 2.1.280 (subscription login) | **Live** (2 build-agent calls + 2 adapter calls + one 3-round session) | login check via `claude auth status`; maintained conversation (`--session-id`, then `--resume`); decisions validated by the engine and settled; named strategies with varied bet mixes. CLI cost estimates (estimates, not billing, on a subscription): the two one-off calls cost $0.0046 and $0.0208. **Correction:** the per-round figures recorded for *resumed* rounds were the CLI's running totals for the whole conversation and were over-counted (see below); per-turn increases are now recorded |
 | Rule-based demo player | Live | full sessions over HTTP (no AI) |
 | Ollama | Fixture only | not installed on this machine |
 | Anthropic Messages API | Fixture only | no API key; official SDK pointed at a local mock server |
@@ -73,7 +76,7 @@ consecutive spins, onSettled once, reduced motion, hidden tab, independent wheel
 | ID | Severity | Status |
 |---|---|---|
 | D1 unknown-cost `error` attempts counted as $0 in the budget | high | **fixed** (`budget.ts`), test updated (`units.test.ts`) |
-| D3 reused Idempotency-Key with a different slip returned the old round | medium | **fixed and verified live** → 409 `duplicate_request` (a reordered identical slip still replays). Correction: commit a69822c and an earlier version of this report called D3 fixed while the check was not wired in; the closure review caught it and it was fixed in the following commit with a regression test. |
+| D3 reused Idempotency-Key with a different slip returned the old round | medium | **fixed and verified live** → 409 `duplicate_request` (a reordered identical slip still replays). Correction: an earlier commit (`caf7b58`, whose message lists D3 as fixed) and an earlier version of this report called D3 fixed while the check was not wired in; the closure review caught it and `3a08e36` fixed it with a regression test (`service.test.ts` › D3). |
 | D4 Laya always chose "stop" | medium | **fixed** ("stop" not offered to Laya) and **verified live** (3 rounds) |
 | D5 CLI "Connected" after a version-only check | medium | **fixed**: connection now verified with `claude auth status` |
 | D6 component validator failed on RouletteWheel | low | **fixed** |
@@ -93,10 +96,56 @@ conversation / resting-wheel changes verified **closed** with live probes; no cr
 
 ## Clean checkout
 
-Fresh `git clone https://github.com/leelaravind/Luck` → `npm ci` → `npm run typecheck` → `npm test` (46 files, 1 057 tests
-at that commit) → `npm run build` — all succeeded; the built single-port server served the UI.
+Fresh `git clone https://github.com/leelaravind/Luck` → `npm ci` → `npm run typecheck` → `npm test` → `npm run build`
+— all succeeded before this fix round, and the built single-port server served the UI.
+<!--COUNTS--> TODO(lead): re-run the clean checkout after this fix round and record its test files / tests here.
+
+**ZIP download (no git).** Before this fix round a ZIP download failed 1 test and `npm run secret-scan`, because the
+scanner needed git. The scanner now falls back to walking the folder (honouring `.gitignore`) with a notice. Checked
+by the tests (a folder outside any git repository and a run without git on `PATH`) and on a copy of the
+publishable files outside git: notice printed, the same number of files scanned as in git mode, clean — also after
+adding a `.env` with a key-shaped value, `data/luck.db`, `tmp/` and `node_modules/`, which `.gitignore` excludes.
+A full `npm ci` + `npm test` from a real GitHub ZIP was not run.
+
+## Final audit fix round — dev server, repository, documentation
+
+- **Claude Code CLI cost (audit item 2).** The CLI reports `total_cost_usd`, `duration_api_ms` and `modelUsage` as
+  running totals for the whole resumed conversation. Earlier versions stored each total as the cost / API time of
+  one call and added them up, so CLI costs were **over-counted** — session `82868f23` showed $20.69 while the CLI's
+  own conversation total was $1.85 — tokens per second were too low, and a session with an app spending limit
+  stopped at about 28 % of its budget. The adapter now records each turn's increase (fixture-tested with a
+  two-turn conversation in `claudeCli.test.ts`); see [providers-cli-laya.md](providers-cli-laya.md#usage-cost-latency-quota).
+  Usage saved by earlier versions is not recalculated.
+- **Dev server file access and CORS (item 3).** `vite.config.ts` now sets `server.cors: false` and
+  `server.fs` (strict; allow `src/web`, `src/shared`, `node_modules`; deny `.env*`, `*.db`, `*.db-*`, `*.sqlite*`,
+  certificates/keys, `.npmrc`, `.git`, and this checkout's `data/` and `tmp/`). Checked by
+  `tests/security/vite-dev.test.ts` (real Vite, ephemeral port) and live against the running `npm run dev` after the
+  config reload: `GET /@fs/<project>/data/luck.db` with `Origin: http://127.0.0.1:9999` → `403`, no
+  `Access-Control-Allow-Origin`; `/main.tsx`, a `src/shared` module, the bundled fonts, `/@vite/client` and the
+  pre-bundled dependencies → `200`. The same config with Vite's defaults returned `200`, the SQLite header and the
+  echoed origin for a throw-away `.db` file. The deny globs for `data/` and `tmp/` are anchored to the checkout; an
+  unanchored `**/data/**` would have denied the whole app for a checkout under a folder named `data` or `tmp`.
+- **Animation speed vs. model calls (item 4).** Docs now say what the code does: the wheel's animation speed
+  changes only the animation; *Pause between autonomous rounds* (`roundPacingMs`, default 7 s) sets how often a
+  model is asked.
+- **Repository hygiene (items 12, 16, 18, 19).** Secret scan falls back to walk mode outside git (above);
+  `.gitignore` and the scanner cover model weights (`*.pt`, `*.pth`, `*.ckpt`, `*.h5`, `*.safetensors`, `*.gguf`,
+  `*.onnx`), `venv/`, `*.p12`/`*.pfx`, SSH keys, `.npmrc` and SQLite `-wal`/`-shm`/`-journal` files
+  (`tests/security/repo-hygiene.test.ts`, `git check-ignore`); the font packages are listed as OFL-1.1; the
+  `.gitattributes` rule for `design-references/` now comes after `* text=auto`, `git check-attr` reports
+  `text: unset` for all three files, and their sha256 still equal `H:\LUCKY\stitch_ai_roulette_lab\*`
+  (code.html `43c9d2f7…`, DESIGN.md `7642fba5…`, screen.png `b2569bf3…`).
+- **What the Claude Code CLI adds (item 28).** Read-only look at the CLI's own transcript of a game conversation
+  (2026-09-23): besides Luck's prompt and observation it contains CLI-added `environment` (working directory,
+  platform, shell, OS version), `date` and `session_context` (the account e-mail) entries. Now disclosed in
+  [providers.md](providers.md) and [providers-cli-laya.md](providers-cli-laya.md#what-the-model-sees); the CLI's
+  sandbox is now outside the repository (`<OS temp folder>/luck-cli-sandbox`).
+- **Docs brought up to date (items 8–11).** Laya: 13 labels, no `stop`, live test recorded; the requirements
+  checklist has a status and evidence for every row; `testing.md` no longer lists a failure that was fixed.
 
 ## Not verified yet
+
+- A full `npm ci` + `npm test` from a real GitHub ZIP download (the scanner fallback was checked on a copy).
 
 - A keyboard-only walkthrough and a screen-reader pass of the running UI.
 - A live wheel animation watched end to end in a visible tab (the automation tab reports `hidden`, so reveals were immediate).

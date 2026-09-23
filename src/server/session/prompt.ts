@@ -6,7 +6,7 @@
 import { MAX_EXPLANATION_CHARS, MAX_STRATEGY_CHARS, type GameObservation } from '../../shared/contracts.js';
 
 /** Max validation errors echoed back in a corrective retry note (bounded prompt growth). */
-export const MAX_CORRECTIVE_ERRORS = 6;
+const MAX_CORRECTIVE_ERRORS = 6;
 const MAX_CORRECTIVE_ERROR_CHARS = 200;
 
 export function buildSystemPrompt(obs: GameObservation, opts: { allowStop?: boolean; runtimeLimited?: boolean } = {}): string {

@@ -9,11 +9,12 @@ and every winning number comes from a **FIXTURE outcome source** (a scripted seq
 ```bash
 npm test                                   # everything (unit + e2e + security)
 npx vitest run tests/e2e                   # end-to-end API flows only
-npx vitest run tests/security              # HTTP security checks + secret scanner tests
+npx vitest run tests/security              # HTTP + Vite dev-server security, secret scanner, repo hygiene
 npx vitest run tests/e2e/manual-session.test.ts   # one file
 npm run typecheck                          # tsc for the web/test project and the server project
 node scripts/secret-scan.mjs               # pre-commit secret scan of this repository (exit 1 on findings)
-                                           # (also: npm run secret-scan)
+                                           # (also: npm run secret-scan; outside a git repository it
+                                           #  prints a notice and walks the folder, honouring .gitignore)
 gitleaks git . --config .gitleaks.toml     # optional, if gitleaks is installed: full-history scan, as CI runs it
 ```
 
@@ -27,11 +28,12 @@ export npm_config_cache="$PWD/tmp/npm-cache"
 $env:npm_config_cache = "$PWD\tmp\npm-cache"
 ```
 
-`tmp/` is gitignored. The e2e and security suites write their SQLite files and fixtures to `tmp/10/` and delete
-them afterwards. They never write outside the repository.
+`tmp/` is gitignored. The e2e and security suites write their SQLite files and fixtures to `tmp/10/` (the Vite
+dev-server test to `tmp/vite-dev-<uuid>/`) and delete them afterwards. They never write outside the repository.
 
-Tests that need a real socket (SSE, raw `Host` headers) listen on an **ephemeral port** (the OS picks a free port).
-They never use 3717 or 5717, so they can run while `npm run dev` is running.
+Tests that need a real socket (SSE, raw `Host` headers, the Vite dev server) listen on an **ephemeral port** (the OS
+picks a free port). They never use 3717 or 5717, so they can run while `npm run dev` is running. The Vite test uses its
+own cache folder and no dependency pre-bundling, so it never touches `node_modules/.vite` of a running dev server.
 
 ## Fixture vs. live
 
@@ -83,7 +85,7 @@ SSE), sending the headers a same-origin browser would send (`Host`, `Origin`, `S
   `stale`/`cancelled` and never becomes a bet; the epoch increases.
 - Provider errors: bounded retries (1 + `maxRetries` attempts), then `paused` / `provider_error`, failed
   attempts counted, no fallback to the demo player, no background retries.
-- `maxConsecutiveFailures` contract check (pause only after N failed decisions) — see *Known failures*.
+- `maxConsecutiveFailures`: with a limit of N the session pauses only after N failed decisions in a row.
 - Invalid output (prose, unknown action/field, illegal split, fractional/over-balance stake, two JSON objects)
   → decision `invalid`, session `paused` / `invalid_output`, no round, no outcome drawn.
 - Budget: a budget that cannot cover one request blocks it before the adapter is called; with a real budget,
@@ -122,23 +124,44 @@ with an unsettled round. A new repository + service + app on the same file then 
   server log records the failure without the secret. Malformed JSON / missing `Idempotency-Key` → `400`;
   unknown `/api` route → `404` `ApiErrorBody`.
 
+### `tests/security/vite-dev.test.ts` — the development web server
+Starts Vite programmatically with the real `vite.config.ts` on an ephemeral port and checks over HTTP:
+`GET /@fs/<project>/data/luck.db` (the audit's repro) and throw-away database / WAL / data files under
+`tmp/…/data/` → `403` without their content (also via `../` paths); `package.json`, `.env.example`, server code,
+docs and `.git` → `403`; no `Access-Control-Allow-Origin` for another local origin (GET and preflight); the app
+itself (`index.html`, `/main.tsx`, the `src/shared` modules it imports, `/@vite/client`) is still served with the dev
+headers. A second part runs Vite's own matcher (`isFileLoadingAllowed`) for checkouts in awkward folders
+(`/tmp/Luck`, `/Data/Luck`, `Projects (old)`, `[lab]`, `{a,b}`): app files stay allowed, data/tmp/database/`.env`/`.git`
+stay denied.
+
 ### `tests/security/secret-scan.test.ts` and `scripts/secret-scan.mjs`
-The scanner lists files with `git ls-files --cached --others --exclude-standard` (what a commit could publish)
-and flags Anthropic / `sk-` style / GitHub / AWS / Slack keys, PEM private keys, generic
-`api_key = '<long random>'` assignments, and forbidden files (`.env*` except `.env.example`, SQLite files,
-`*.pem`/`*.key`, `client_secret*.json`, `credentials*.json`, SSH keys). Output is always redacted. The test plants one
-secret per rule in a throw-away fixture (assembled at runtime so the test source stays clean), checks
-placeholders/hand-written fakes/suppressed lines are not flagged, checks redaction and exit codes, and runs
-the scanner over this repository in git mode (read-only), which must be clean.
+The scanner lists files with `git ls-files --cached --others --exclude-standard` (what a commit could publish).
+When the folder is not a git repository (a ZIP download) or git is not installed, it prints a notice and falls
+back to its walk mode (`--no-git`), which skips `.git/` and `node_modules/` and honours every `.gitignore` in the
+tree the way git does. It flags Anthropic / `sk-` style / GitHub / AWS / Slack keys, PEM private keys, generic
+`api_key = '<long random>'` assignments, and forbidden files (`.env*` except `.env.example`, SQLite files and their
+`-wal`/`-shm`/`-journal` files, `*.pem`/`*.key`/`*.p12`/`*.pfx`, `client_secret*.json`, `credentials*.json`, SSH
+keys, model weights `*.safetensors`/`*.gguf`/`*.pt`/`*.pth`/`*.ckpt`/`*.onnx`/`*.h5`). Output is always redacted. The
+test plants one secret per rule in a throw-away fixture (assembled at runtime so the test source stays clean),
+checks placeholders/hand-written fakes/suppressed lines are not flagged, checks redaction and exit codes, checks
+the `.gitignore` handling (negation, anchoring, `**`, nested `.gitignore` files — compared with `git ls-files` in a
+throw-away repository), runs the scanner outside any git repository and without git on `PATH` (fallback with a
+notice, still finds secrets), and runs it over this repository (git mode in a clone, walk mode in a ZIP
+download), which must be clean; in a clone the walk-mode file list must equal git's.
+
+### `tests/security/repo-hygiene.test.ts`
+`.gitignore` covers local data (SQLite files and journals), credentials (keys, certificates, SSH keys, `.npmrc`),
+Python environments and model weights (checked with the scanner's matcher and, when git is available, with
+`git check-ignore --no-index`). The Stitch exports in `design-references/` equal the owner's originals (sha256), the
+`.gitattributes` rule for them comes after `* text=auto`, and `git check-attr` reports `text: unset` for them.
 
 Allow-listed: `sk-ant-test-SECRET123`, placeholders (`xxxx`, `<…>`, `your-key`, `changeme` …), generic
 assignments in `.env.example`, lines marked `secret-scan:allow`, and obviously hand-written values (marker words
 such as `test`/`fixture`, words-only key bodies, `123456`/`abcdef` runs). Binary files and files over 2 MiB are
 not content-scanned (their names are).
 
-## Known failures (reported, not hidden)
+## Known failures
 
-- `ai-session.test.ts › limits.maxConsecutiveFailures (contract)`: the session service currently pauses
-  after the **first** failed decision; `SessionLimits.maxConsecutiveFailures` is validated but not used by the
-  runner. The test asserts the contract ("consecutive failed decisions before the session pauses") and fails
-  until the runner implements it or the contract is changed.
+None. (An earlier version of this page listed `ai-session.test.ts › limits.maxConsecutiveFailures (contract)` as
+failing; the runner now implements `SessionLimits.maxConsecutiveFailures` — `src/server/session/runner.ts` — and the
+test passes.) Current counts are in [verification.md](verification.md).
