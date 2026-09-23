@@ -279,10 +279,12 @@ further documented limit. A smaller alternative, `--max-turns 1`, needs a live c
 
 ## Outstanding
 
-- **Old commits are still viewable by SHA on GitHub.** The history was rewritten and the CI runs of the 5 commits
-  from before the rewrite were deleted; no branch, tag, pull request or release points at them. GitHub still
-  serves those commits by SHA (commit page and REST API) until GitHub Support processes the owner's request to
-  purge them. Nothing in these docs refers to them.
+- **Old commits are still viewable by SHA on GitHub.** The history was rewritten and the CI runs of the commits
+  from before the rewrite were deleted; no branch, tag, pull request, fork or release points at them. GitHub still
+  serves those 6 commits by SHA (commit page and REST API) — the old root and the 5 commits after it; an earlier
+  version of this note counted only the 5. The owner's request to remove their cached views was filed with GitHub
+  Support on 2026-09-23 through its "Clear cached views" assistant; it is open until Support processes it (GitHub
+  states it does not remove non-sensitive data, so it may be declined). Nothing else in these docs refers to them.
 
 ## Not verified yet
 
