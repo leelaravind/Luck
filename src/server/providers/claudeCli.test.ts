@@ -20,6 +20,11 @@ const FAKE = fileURLToPath(new URL('../../../tests/fixtures/fake-claude.mjs', im
  * (the fake CLI keeps each conversation's state in it while a test runs).
  */
 const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'luck-claudecli-test-'));
+/**
+ * A folder as the OS reports it to a child's process.cwd(): symlinks resolved (macOS's temp dir sits
+ * under /var, a link to /private/var) and case folded (Windows paths ignore case).
+ */
+const realDir = (p: string) => fs.realpathSync.native(p).toLowerCase();
 
 type Mod = typeof import('./claudeCli.js');
 type AdapterOptions = NonNullable<Parameters<Mod['createClaudeCliAdapter']>[0]>;
@@ -276,7 +281,7 @@ describe('claude-cli decide() with the fake CLI (fixture)', () => {
     const rec = readRecord();
     expect(rec.stdin).toBe('OBSERVATION-JSON-GOES-HERE');
     expect(rec.argv.join(' ')).not.toContain('OBSERVATION-JSON-GOES-HERE');
-    expect(path.resolve(rec.cwd).toLowerCase()).toBe(path.resolve(files().sandbox).toLowerCase());
+    expect(realDir(rec.cwd)).toBe(realDir(files().sandbox));
     expect(fs.readdirSync(files().sandbox)).toEqual([]);
     expect(rec.maxOutputTokens).toBe('321');
     const keys = rec.envKeys.map((k) => k.toUpperCase());
@@ -850,7 +855,7 @@ describe('claude-cli sandbox directory', () => {
     const r = await adapter.decide(request(), CFG, sig());
     expect(r.ok).toBe(true);
     const expected = path.join(fakeTmp, 'luck-cli-sandbox');
-    expect(path.resolve(readRecord().cwd).toLowerCase()).toBe(path.resolve(expected).toLowerCase());
+    expect(realDir(readRecord().cwd)).toBe(realDir(expected));
     expect(fs.readdirSync(expected)).toEqual([]);
   });
 });
