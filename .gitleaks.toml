@@ -1,0 +1,34 @@
+# gitleaks configuration for Luck — AI Roulette Lab.
+# Uses gitleaks' default rules. Adds ONE narrow allowlist, scoped to the heuristic `generic-api-key`
+# rule only, for deliberately fake credentials in tests. A finding is ignored only when BOTH hold
+# (condition = "AND"):
+#   1. the file is a test file or test fixture, and
+#   2. the matched value has an obviously fake shape (fixture/test/fake markers, sequential characters,
+#      or an Idempotency-Key-shaped value).
+# All provider-specific rules (Anthropic, OpenAI, GitHub, AWS, private keys, ...) are untouched, and a
+# realistic-looking generic secret is still reported anywhere, including in tests.
+# (Rule-scoped allowlists are used because gitleaks 8.24's global [[allowlists]] ignores `regexes`.)
+
+title = "Luck gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Deliberately fake credentials and idempotency keys used by redaction/security tests"
+condition = "AND"
+regexTarget = "match"
+paths = [
+  '''(?:^|/)src/.+\.test\.tsx?$''',
+  '''(?:^|/)src/.+/__tests__/.+\.tsx?$''',
+  '''(?:^|/)tests/.+''',
+]
+regexes = [
+  '''(?i)(fixture|fake|dummy|placeholder|test-key)''',
+  '''(?i)(abc123def456|abcdefgh-\d{4}|AbCdEfGhIjKlMnOpQrSt)''',
+  # Idempotency-Key values (UUIDs) are request ids, not credentials.
+  '''(?i)idempotency|KEY = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''',
+]

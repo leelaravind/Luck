@@ -19,7 +19,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "validate:components": "node scripts/validate-components.mjs"
+    "validate:components": "node scripts/validate-components.mjs",
+    "secret-scan": "node scripts/secret-scan.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

@@ -33,18 +33,30 @@ jobs:
       - run: npm run build
 
   secret-scan:
-    name: secret-scan (gitleaks)
+    name: secret-scan (gitleaks, full history)
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # gitleaks-action lists the commits of a pull request through the API.
-      pull-requests: read
+    env:
+      GITLEAKS_VERSION: 8.24.3
+      # sha256 of gitleaks_8.24.3_linux_x64.tar.gz from the release's checksums.txt
+      GITLEAKS_SHA256: 9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Report in the job log only; commenting on PRs would need write permission.
-          GITLEAKS_ENABLE_COMMENTS: 'false'
+      - name: Install gitleaks (pinned, checksum-verified)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSfL -o gitleaks.tar.gz "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+      - name: Scan the full git history
+        # Every commit is scanned, not only the pushed range, so a root commit or a force-push
+        # cannot make the scan skip anything. Allowlist for fake test values: .gitleaks.toml.
+        run: '"$RUNNER_TEMP/gitleaks" git . --config .gitleaks.toml --redact --verbose --exit-code 1'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+      - name: Project secret scan (tracked files and forbidden file types)
+        run: node scripts/secret-scan.mjs

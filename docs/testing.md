@@ -13,6 +13,8 @@ npx vitest run tests/security              # HTTP security checks + secret scann
 npx vitest run tests/e2e/manual-session.test.ts   # one file
 npm run typecheck                          # tsc for the web/test project and the server project
 node scripts/secret-scan.mjs               # pre-commit secret scan of this repository (exit 1 on findings)
+                                           # (also: npm run secret-scan)
+gitleaks git . --config .gitleaks.toml     # optional, if gitleaks is installed: full-history scan, as CI runs it
 ```
 
 On Windows, if `npx` fails because npm's configured cache points to a drive that no longer exists, give npm a
