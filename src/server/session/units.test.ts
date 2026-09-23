@@ -187,7 +187,12 @@ describe('prompts', () => {
     expect(sys).toMatch(/JSON object and nothing else/);
     expect(sys).toMatch(/at most 400 characters/);
     expect(sys).toMatch(/Do not include hidden reasoning/);
-    expect(sys).toMatch(/Outcomes are independent and cannot be predicted/);
+    // No house-edge / "cannot be predicted" commentary in model-facing text (user request); active play is asked for.
+    expect(sys).not.toMatch(/house edge/i);
+    expect(sys).not.toMatch(/cannot be predicted/i);
+    expect(obs.rules.join(' ')).not.toMatch(/cannot be predicted|house edge/i);
+    expect(sys).toMatch(/Play actively/);
+    expect(sys).toMatch(/Adapt every round/);
     // Asks for a named strategy, gives no concrete bet as an example (no anchoring on red), and by
     // default does not offer "stop".
     expect(sys).toMatch(/"strategy" names the betting strategy/);

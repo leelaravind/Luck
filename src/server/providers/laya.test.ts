@@ -302,6 +302,7 @@ describe('laya adapter (mock laya-serve fixture)', () => {
     expect(s).toContain('Minimum stake 10');
     expect(s).toContain('Rounds remaining: 48');
     expect(s).toContain('net -10');
-    expect(s).toMatch(/random/);
+    // No house-edge / predictability commentary in model-facing text (user request).
+    expect(s).not.toMatch(/house edge|cannot be predicted|independent/i);
   });
 });

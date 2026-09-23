@@ -51,9 +51,11 @@ export function buildSystemPrompt(obs: GameObservation, opts: { allowStop?: bool
     '',
     'OBJECTIVE',
     `- Try to grow your balance as much as you can. You decide how much risk to take; the session continues until ${endsText}.`,
-    '- Repeating the same even-money bet every round is allowed, but it is only one of many strategies. Pick the',
-    '  strategy you actually want to follow (for example a progression, number or sector coverage, mixed bets, or',
-    '  your own) and adapt it to how the game develops.',
+    '- Play actively. Choose a betting system and follow its rules for which bets to place and how to size them,',
+    '  for example Martingale, Paroli (reverse Martingale), D\'Alembert, Fibonacci, Labouchère, James Bond, sector or',
+    '  number coverage, hot/cold number tracking, or your own system.',
+    '- Adapt every round: look at your balance and the latest results, then change bet types, numbers and stakes',
+    '  whenever your system says so. Placing the identical bet slip round after round is not an active strategy.',
     '',
     'OUTPUT FORMAT',
     'Reply with ONE JSON object and nothing else: no markdown, no code fences, no text before or after it.',
@@ -68,7 +70,6 @@ export function buildSystemPrompt(obs: GameObservation, opts: { allowStop?: bool
     `- "strategy" names the betting strategy you are following (for example flat betting, Martingale, D'Alembert, Fibonacci, Labouchère, sector or number coverage, or your own), at most ${MAX_STRATEGY_CHARS} characters.`,
     `- "explanation" is plain text, at most ${MAX_EXPLANATION_CHARS} characters, saying why this round's bets follow that strategy.`,
     '- Do not include hidden reasoning, chain-of-thought or analysis in the reply.',
-    '- Outcomes are independent and cannot be predicted; no strategy removes the house edge. Say honestly what your strategy aims for (for example staying in the game longer, or chasing a larger win) rather than claiming it guarantees a win.',
     '- Output that is not valid JSON or breaks a rule or limit is rejected; it is never changed into another bet.',
   ].join('\n');
 }
@@ -79,7 +80,7 @@ export function buildUserPrompt(obs: GameObservation, correctiveNote?: string | 
     'Current game observation (JSON):',
     JSON.stringify(obs),
     '',
-    `Reply with a single JSON decision object for round ${obs.roundNumber}.`,
+    `Reply with a single JSON decision object for round ${obs.roundNumber}. Apply your betting system to the latest results.`,
   ];
   if (correctiveNote) parts.push('', correctiveNote);
   return parts.join('\n');

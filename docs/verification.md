@@ -56,6 +56,13 @@ consecutive spins, onSettled once, reduced motion, hidden tab, independent wheel
 - **Objective in the prompt**: live Claude Opus 5.5 via the CLI (3 test rounds) mixed red/black with a dozen or column
   and a straight-up number, named a strategy each round, and chose to skip only when it knew it was the last round.
   Payout check round 2 (29 black): black 20.00 → 40.00 back, column 2 10.00 → 30.00 back, straight 0 lost → 70.00 returned.
+- **Active play, no house-edge framing** (user request): model-facing text (system prompt, observation rules, Laya
+  state) no longer mentions the house edge or "cannot be predicted"; the prompt asks the model to pick a betting
+  system and adapt bets and stakes every round. The user-facing UI, README and exports keep the honest disclaimer.
+  Before: Opus 5.5 flat-bet red for 13 rounds citing the house edge; Fable 5.1 repeated one identical slip for 12
+  rounds. After (live, Fable 5.1 via the CLI, 4 test rounds): "James Bond coverage with Paroli progression" —
+  high 20 → 24 (profit added) → 42 (parlay) → back to 20 after a loss, with a six-line 13-18 and 0 hedge; all four
+  settlements matched a hand check (balance 1 000.00 → 988.00).
 - **Wheel at rest**: after a reload or session switch the ball rests in the last revealed pocket (no replay, no
   onSettled); verified in the running app (`data-landed-number` 34 = Last round 34 red) and by a component test.
 - **Mobile**: emulated 390 px viewport (DevTools protocol, `mobile: true`) — page scroll width equals the viewport;

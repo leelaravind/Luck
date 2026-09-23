@@ -43,7 +43,6 @@ export const OBSERVATION_RULES: readonly string[] = [
   'Virtual credits only; no real money is involved.',
   'Amounts are integer subunits: 100 subunits = 1 credit.',
   'Your bets are committed before the winning number is drawn by a secure random number generator.',
-  'Outcomes are independent and cannot be predicted; past results do not influence future spins.',
   'A winning bet returns its stake plus stake x payout; a losing bet loses its stake.',
   'When 0 wins, every outside bet (red/black/odd/even/low/high/dozen/column) loses.',
   'Invalid decisions are rejected and never converted into a different bet.',

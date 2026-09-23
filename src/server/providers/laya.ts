@@ -122,7 +122,6 @@ export function buildLayaState(obs: GameObservation): string {
     `Rounds remaining: ${l.roundsRemaining === null ? 'no limit' : l.roundsRemaining}.`,
     `Last results (oldest first): ${results}.`,
     lastLine,
-    'Outcomes are independent and random; past results do not predict future spins.',
   ].join('\n');
 }
 

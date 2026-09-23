@@ -77,7 +77,8 @@ ready ──start──► running ──pause──► pause_requested ──(r
 ## What a model sees
 
 A model receives only a `GameObservation`: rules, payouts, limits, its balance, and a bounded history of
-*settled* rounds. It never receives RNG state, the pending round, database ids, configuration or secrets.
+*settled* rounds. The prompt asks it to follow and adapt a named betting system; it deliberately contains no
+house-edge commentary (that disclaimer is shown to the user in the UI and README instead). It never receives RNG state, the pending round, database ids, configuration or secrets.
 It answers with `{"action": "bet" | "skip", "bets": [...], "strategy": "...", "explanation": "..."}` ("stop" only
 when the session allows the model to end it), which is parsed
 strictly (`parseDecision`) and then validated by the same rules as a human bet.
